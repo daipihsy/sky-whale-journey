@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>天空之鲸 · 旅途</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe9f2; }
+  canvas { display: block; cursor: grab; touch-action: none; }
+  canvas:active { cursor: grabbing; }
+  #veil { position: fixed; inset: 0; pointer-events: none; opacity: 1;
+    background: radial-gradient(ellipse at 50% 55%, #fffdf6 0%, #fff6e2 45%, #f7ecd8 100%); }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    font: 300 15px/1.4 "PingFang SC", "Helvetica Neue", sans-serif; letter-spacing: .4em; color: #b9a887;
+    transition: opacity 1.2s ease; pointer-events: none; }
+  .ui { position: fixed; pointer-events: none; font: 400 12.5px/1.6 "PingFang SC", "Helvetica Neue", sans-serif;
+    color: rgba(255,255,255,.92); text-shadow: 0 1px 6px rgba(40,60,90,.55); letter-spacing: .06em; transition: opacity .8s ease; }
+  #hud { left: 50%; bottom: 18px; transform: translateX(-50%); text-align: center; white-space: nowrap; opacity: .9; }
+  #hud b { font-weight: 500; color: #fff3d6; }
+  #mode { left: 18px; top: 14px; opacity: .85; }
+  #sound { left: 50%; bottom: 48px; transform: translateX(-50%); opacity: 1; color: #fff7e4; }
+  #toast { left: 50%; top: 18%; transform: translateX(-50%); font-size: 14px; opacity: 0; }
+  #stats { position: fixed; right: 8px; top: 8px; font: 12px monospace; color: #234; background: rgba(255,255,255,.6); padding: 2px 6px; }
+  #timeui { position: fixed; right: 16px; top: 14px; width: 248px; padding: 12px 14px 12px; border-radius: 14px;
+    font: 400 12px/1.4 "PingFang SC", "Helvetica Neue", sans-serif; color: #fff; letter-spacing: .04em;
+    background: rgba(20, 30, 50, .28); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,.16); box-shadow: 0 6px 24px rgba(10,20,40,.18); user-select: none; transition: opacity .8s ease; }
+  #timeui .row { display: flex; align-items: center; gap: 8px; }
+  #timeui .clock { font: 300 26px/1 "Helvetica Neue", "PingFang SC", sans-serif; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+  #timeui .phase { opacity: .78; font-size: 12px; margin-top: 3px; }
+  #timeui .icon { width: 30px; height: 30px; margin-left: auto; border-radius: 50%; position: relative; flex: none; }
+  #timeui input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; margin: 12px 0 4px; border-radius: 4px; outline: none; cursor: pointer;
+    background: linear-gradient(90deg, #0b1430 0%, #1b2b5a 20%, #e4916d 25.5%, #9cc6ec 32%, #7fb4ea 50%, #a9c9ea 66%, #f0a068 74%, #6a4f86 78%, #1b2b5a 82%, #0b1430 100%); }
+  #timeui input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid rgba(20,30,50,.35); box-shadow: 0 1px 6px rgba(0,0,0,.35); }
+  #timeui input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid rgba(20,30,50,.35); }
+  #timeui .ticks { display: flex; justify-content: space-between; font-size: 10px; opacity: .55; margin: 0 1px 8px; }
+  #timeui button, #timeui select { font: inherit; color: #fff; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 8px; padding: 4px 0; cursor: pointer; transition: background .2s; }
+  #timeui button:hover, #timeui select:hover { background: rgba(255,255,255,.24); }
+  #timeui .jumps button { flex: 1; }
+  #timeui #tplay { width: 34px; flex: none; }
+  #timeui select { flex: 1; padding: 4px 6px; -webkit-appearance: none; appearance: none; text-align: center; }
+  #timeui select option { color: #222; }
+  #timeui .jumps { margin-top: 6px; }
+  #timeui .weather button.on { background: rgba(255,255,255,.34); border-color: rgba(255,255,255,.5); }
+  @media (max-width: 760px) { #hud { font-size: 11px; white-space: normal; width: 92%; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./node_modules/three/build/three.module.js",
+  "three/addons/": "./node_modules/three/examples/jsm/",
+  "three/examples/jsm/": "./node_modules/three/examples/jsm/",
+  "three-mesh-bvh": "./node_modules/three-mesh-bvh/build/index.module.js",
+  "n8ao": "./node_modules/n8ao/dist/N8AO.js",
+  "postprocessing": "./src/vendor/postprocessing-stub.js"
+} }
+</script>
+</head>
+<body>
+<div id="veil"></div>
+<div id="loading">世界正在苏醒</div>
+<div id="mode" class="ui"></div>
+<div id="toast" class="ui"></div>
+<div id="sound" class="ui">♪ 点击画面或按任意键开启声音</div>
+<div id="timeui">
+  <div class="row">
+    <div><div class="clock" id="tclock">16:30</div><div class="phase" id="tphase">午后</div></div>
+    <div class="icon" id="ticon"></div>
+  </div>
+  <input type="range" id="tslider" min="0" max="24" step="0.05" value="16.5" aria-label="一天中的时间" />
+  <div class="ticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>
+  <div class="row">
+    <button id="tplay" title="播放/暂停（T）">❚❚</button>
+    <select id="tspeed" title="时间流速">
+      <option value="12">慢 · 5 分钟一小时</option>
+      <option value="60" selected>中 · 1 分钟一小时</option>
+      <option value="360">快 · 10 秒一小时</option>
+      <option value="1800">极快 · 2 秒一小时</option>
+    </select>
+  </div>
+  <div class="row jumps weather">
+    <button data-w="auto" title="天气自己变化（Y 切换）">自动</button><button data-w="clear">晴</button><button data-w="cloudy">多云</button><button data-w="rain">雨</button><button data-w="fog">雾</button>
+  </div>
+  <div class="row jumps">
+    <button data-h="6.1">日出</button><button data-h="12">正午</button><button data-h="17.75">黄昏</button><button data-h="23">夜晚</button>
+  </div>
+</div>
+<div id="hud" class="ui"><b>WASD</b> 移动 · <b>Shift</b> 慢走 · <b>空格</b> 跳跃（空中按住滑翔） · <b>F</b> 呼唤 · <b>拖动鼠标</b> 转视角 · <b>滚轮</b> 远近 · <b>P</b> 自动旅程 · <b>M</b> 静音 · <b>Q</b> 画质 · <b>T</b> 时间暂停 · <b>Y</b> 天气 · <b>[ ]</b> 调时间 · <b>H</b> 隐藏说明</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
