@@ -1426,26 +1426,27 @@ export class WhalePod {
     return m;
   }
   get visitor() { return this.whales.find((w) => w.visitState) || null; }
-  // a call: the nearest whale answers unless another can come with less disturbance; if their
-  // paths would cross, the one that comes may wait a few seconds before it turns (the song is
-  // immediate), and whoever stays gets a small, smooth move out of the way
-  summon(t, traveller, predict, groundAt, clearAt) {
-    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt);
+  // a call: `pick` answers (the nearest one if none is given) — the other comes instead only if
+  // `pick` truly cannot come safely; if their paths would cross, the one that comes may wait a few
+  // seconds before it turns (the song is immediate), and whoever stays moves smoothly out of the way
+  summon(t, traveller, predict, groundAt, clearAt, pick = null) {
+    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt, pick);
     let r = it.next();
     while (!r.done) r = it.next();
     return r.value;
   }
   // the same, spread over several frames so the call never stutters; resolves with the result
-  summonAsync(t, traveller, predict, groundAt, clearAt) {
-    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt);
+  summonAsync(t, traveller, predict, groundAt, clearAt, pick = null) {
+    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt, pick);
     return new Promise((resolve) => {
       const step = () => { const r = it.next(); if (r.done) resolve(r.value); else setTimeout(step, 0); };
       step();
     });
   }
-  *summonSteps(t, traveller, predict, groundAt, clearAt) {
+  *summonSteps(t, traveller, predict, groundAt, clearAt, pick = null) {
     if (this.visitor) return null;
     const cands = this.whales.map((w) => ({ w, d: w.position.distanceTo(traveller) })).sort((x, y) => x.d - y.d);
+    if (pick) cands.sort((x, y) => (x.w === pick ? -1 : 0) - (y.w === pick ? -1 : 0));
     let best = null;
     search: for (const delay of [0, 4, 8, 12, 16, 20]) {
       for (const c of cands) {
@@ -1457,7 +1458,7 @@ export class WhalePod {
         c.w.visitState = null;
         yield; // (let a frame through between candidate plans)
         const lift = plans.reduce((m, p) => Math.max(m, p.maxLift), 0);
-        const cost = c.d / 400 + lift / 40 + delay / 6 + (plans.some((p) => !p.ok) ? 100 : 0);
+        const cost = (pick ? (c.w === pick ? 0 : 50) : c.d / 400) + lift / 40 + delay / 6 + (plans.some((p) => !p.ok) ? 100 : 0);
         if (!best || cost < best.cost) best = { cost, lift, whale: c.w, visit: v, plans, others, delay };
         if (lift === 0 && delay === 0) break search; // the nearest one can come right away, nobody moves
       }

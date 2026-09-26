@@ -400,6 +400,15 @@ function setHud(on, save = true) {
   hud.style.opacity = on ? 1 : 0; timeUI.style.opacity = on ? 1 : 0; timeUI.style.pointerEvents = on ? '' : 'none';
   if (save) savePrefs({ hud: on });
 }
+// story captions: larger, slower lines for the moments of the journey
+const captionEl = $('caption');
+function caption(text, { tone = 'light', sec = 4.2 } = {}) {
+  captionEl.textContent = text;
+  captionEl.className = 'ui ' + tone + ' show';
+  clearTimeout(caption._t);
+  caption._t = setTimeout(() => captionEl.classList.remove('show'), sec * 1000);
+}
+window.__caption = caption;
 function toast(msg, sec = 3) {
   toastEl.textContent = msg; toastEl.style.opacity = 1;
   clearTimeout(toast._t); toast._t = setTimeout(() => (toastEl.style.opacity = 0), sec * 1000);
@@ -491,14 +500,16 @@ function whaleVisit(onDone) {
   if (summoning) return;
   const lead = 1.0, t0 = whaleT + lead;
   const predict = (tau) => predictTraveller(tau + lead);
+  // mum (pink) or dad (blue) — chosen at random
+  const pick = W.whales[Math.random() < 0.5 ? 0 : 1];
   const done = (r) => {
     summoning = false;
     if (r) visitInfo = { tPass: r.visit.tPass, sung: false, whale: r.whale };
     onDone && onDone(r);
   };
   summoning = true;
-  if (fastForward) done(W.pod.summon(t0, W.ctrl.pos, predict, groundAt, clearAt));
-  else W.pod.summonAsync(t0, W.ctrl.pos, predict, groundAt, clearAt).then(done);
+  if (fastForward) done(W.pod.summon(t0, W.ctrl.pos, predict, groundAt, clearAt, pick));
+  else W.pod.summonAsync(t0, W.ctrl.pos, predict, groundAt, clearAt, pick).then(done);
 }
 let fastForward = false;
 let visitInfo = null;
@@ -825,7 +836,7 @@ function update(dt) {
     audio.whaleSong(0.9, whalePan());
     for (const w of W.whales) w.glow = Math.max(w.glow, 0.6);
     // one of them turns and comes to the traveller (unless one is already on its way)
-    whaleVisit((r) => { if (r) { r.whale.glow = 1; toast(r.whale.palette === 'pink' ? '粉色的鲸鱼听见了你的呼唤' : '蓝色的鲸鱼听见了你的呼唤', 3); } });
+    whaleVisit((r) => { if (r) { r.whale.glow = 1; caption(r.whale.palette === 'pink' ? '橙子，妈妈来了' : '橙子，爸爸来了'); } });
   }
   // the overhead pass: a deep song, a swell of music, a slow glow
   if (visitInfo) {
@@ -836,6 +847,27 @@ function update(dt) {
     }
     if (!visitInfo.whale.visitState) visitInfo = null;
   }
+
+  // --- story lines: each bridge crossed brings Orange closer to home; home at the castle gate
+  if (j.phase === 'run' && !j.relocate) {
+    const near = nearestS(c.pos, j.s);
+    W.path.bridges.forEach((br, i) => {
+      const st = (j.bridgeState ||= []);
+      if (near.d < 6 && near.s > br.s0 + 2 && near.s < br.s1 - 2) st[i] = st[i] || 'on';
+      if (st[i] === 'on' && near.s > br.s1 + 4 && near.d < 12) {
+        st[i] = 'done';
+        // (dark lettering once the gate's light is rising; never over the homecoming line)
+        if (!j.homeShown) caption('橙子离家又近了一步', { tone: j.veil > 0.25 ? 'dark' : 'light', sec: 3.6 });
+      }
+    });
+  }
+  // home: at the gate (a few seconds after stepping off the grand bridge), or as soon as the gate's
+  // light takes Orange in, whichever comes first
+  if (!j.homeShown && (j.phase === 'light' || j.phase === 'hold' || (j.mode === 'auto' ? j.s > sGate - 8 : c.pos.distanceTo(gateWorld) < 7))) {
+    j.homeShown = true;
+    caption('橙子，回家了', { tone: 'dark', sec: 5.5 });
+  }
+  if (j.s < 20 && j.phase === 'run') { j.bridgeState = []; j.homeShown = false; }
 
   // --- journey: into the light at the castle gate, then back to the meadow
   if (j.phase === 'run') {
