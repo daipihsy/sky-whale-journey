@@ -68,13 +68,14 @@ export function makeCastleMaterials() {
   const stone = new THREE.MeshStandardMaterial({ color: '#f2e3c8', roughness: 0.86, vertexColors: true });
   stone.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vSW; varying vec3 vSN;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSW; varying vec3 vSN; varying vec2 vSUv;')
       .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+vSUv = uv;
 vSW = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vSN = normalize(mat3(modelMatrix) * objectNormal);`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-varying vec3 vSW; varying vec3 vSN;
+varying vec3 vSW; varying vec3 vSN; varying vec2 vSUv;
 float stoneH;
 ${BUMP_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -86,13 +87,21 @@ ${BUMP_GLSL}`)
   // ashlar courses: staggered blocks with bevelled edges and slightly uneven faces
   float course = 0.72;
   float row = floor(vSW.y / course);
-  float hcoord = (n.x > n.z ? vSW.z : vSW.x) + row * 0.61;
   float bw = 1.35 + 0.35 * ch1(vec2(row, 3.1));
+  float hcoord;
+  if (vSUv.y > 0.5) {
+    // round towers: courses wrap all the way round (a whole number of blocks, so no seam)
+    bw = vSUv.y / max(1.0, floor(vSUv.y / bw + 0.5));
+    hcoord = vSUv.x * vSUv.y + row * 0.61;
+  } else hcoord = (n.x > n.z ? vSW.z : vSW.x) + row * 0.61;
   float col = floor(hcoord / bw);
   float fy = fract(vSW.y / course), fx = fract(hcoord / bw);
   float edge = min(min(fy, 1.0 - fy) * course, min(fx, 1.0 - fx) * bw);
-  float mortar = 1.0 - smoothstep(0.015, 0.05, edge);
-  float bevel = smoothstep(0.0, 0.09, edge);
+  // fade the joints out once they get thinner than a pixel (otherwise they alias into swirls)
+  float px = max(fwidth(hcoord / bw), fwidth(vSW.y / course));
+  float crisp = 1.0 - smoothstep(0.08, 0.25, px);
+  float mortar = (1.0 - smoothstep(0.015, 0.05, edge)) * crisp;
+  float bevel = mix(1.0, smoothstep(0.0, 0.09, edge), crisp);
   float face = cfbm(vSW.xy * 1.7 + vSW.z * 1.3 + col * 3.7);
   float blockTint = ch1(vec2(row, col)) - 0.5;
   // weathering: rain streaks under ledges, grime near the ground, faint lichen
@@ -112,7 +121,7 @@ ${BUMP_GLSL}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = clamp(roughnessFactor - stoneH * 0.08, 0.5, 1.0);`);
   };
-  stone.customProgramCacheKey = () => 'castle-stone-2';
+  stone.customProgramCacheKey = () => 'castle-stone-3';
   const roof = new THREE.MeshStandardMaterial({ color: '#7d91b0', roughness: 0.55, metalness: 0.1, vertexColors: true });
   roof.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
@@ -192,6 +201,19 @@ export class Builder {
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
     if (matrix) g.applyMatrix4(matrix);
+    // masonry on round pieces wraps around them: uv = (fraction around, circumference), or 0 elsewhere
+    if (bucket === 'stone' || bucket === 'trim') {
+      const uv = g.attributes.uv;
+      const round = geo.type === 'CylinderGeometry' || geo.type === 'LatheGeometry';
+      let C = 0;
+      if (round) {
+        const P = geo.parameters;
+        const rMean = geo.type === 'CylinderGeometry' ? (P.radiusTop + P.radiusBottom) / 2 : P.points.reduce((a, p) => a + p.x, 0) / P.points.length;
+        const sx = matrix ? new THREE.Vector3().setFromMatrixScale(matrix).x : 1;
+        C = 2 * Math.PI * rMean * sx;
+      }
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, round ? uv.getX(i) : 0, C);
+    }
     // baked ambient occlusion towards the base of each piece + subtle tint variation
     const pos = g.attributes.position;
     const col = new Float32Array(pos.count * 3);

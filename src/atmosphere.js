@@ -96,6 +96,16 @@ vec3 rainbow(vec3 d) {
 `;
 
 export function patchFogChunks() {
+  // rain: upward-facing surfaces of lit materials darken and turn glossy (opt out with NO_WET)
+  THREE.ShaderChunk.roughnessmap_fragment += `
+#if defined(USE_FOG) && !defined(FLAT_SHADED) && !defined(NO_WET)
+  {
+    vec3 nWet = inverseTransformDirection(normalize(vNormal), viewMatrix);
+    float wet = uRain * smoothstep(0.35, 0.85, nWet.y);
+    diffuseColor.rgb *= 1.0 - 0.3 * wet;
+    roughnessFactor = mix(roughnessFactor, 0.2, wet * 0.85);
+  }
+#endif`;
   THREE.ShaderChunk.fog_pars_vertex = `
 #ifdef USE_FOG
   varying vec3 vFogWorld;

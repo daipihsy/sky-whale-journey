@@ -15,6 +15,25 @@ const CHORDS = [
   { root: 43, pad: [50, 55, 59, 66] }, // Gmaj7
   { root: 45, pad: [52, 57, 61, 64] }, // A(add9)
 ];
+// other moods, all consonant with the same pentatonic melody
+const CHORDS_GOLDEN = [
+  { root: 43, pad: [50, 55, 59, 66] }, // Gmaj7
+  { root: 38, pad: [50, 57, 61, 64] }, // D(add9)
+  { root: 35, pad: [50, 54, 57, 62] }, // Bm(add4)
+  { root: 45, pad: [52, 57, 61, 64] }, // A(add9)
+];
+const CHORDS_NIGHT = [
+  { root: 35, pad: [47, 54, 57, 62] }, // Bm7, low and open
+  { root: 40, pad: [47, 52, 55, 62, 66] }, // Em9
+  { root: 43, pad: [50, 55, 59, 62] }, // G
+  { root: 38, pad: [45, 50, 57, 61] }, // Dmaj7
+];
+const CHORDS_RAIN = [
+  { root: 35, pad: [50, 54, 57, 61] }, // Bm7
+  { root: 40, pad: [52, 55, 59, 62] }, // Em7
+  { root: 43, pad: [50, 55, 59, 66] }, // Gmaj7
+  { root: 40, pad: [47, 52, 55, 59] }, // Em
+];
 // melodic shapes (steps within the pentatonic scale) and their rhythms (in beats)
 const MOTIFS = [
   [[0, 1], [2, 1], [4, 2]], [[4, 1], [3, 1], [2, 2]], [[2, 1], [4, 1], [5, 1], [4, 2]],
@@ -41,7 +60,7 @@ export class AudioEngine {
     this.started = true;
     this.master = ctx.createGain();
     this.master.gain.setValueAtTime(0, ctx.currentTime);
-    this.master.gain.linearRampToValueAtTime(1.1, ctx.currentTime + 2.5);
+    this.master.gain.linearRampToValueAtTime(this.muted ? 0 : 1.1, ctx.currentTime + 2.5);
     // gentle glue, soft top end
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -20; comp.knee.value = 12; comp.ratio.value = 2; comp.attack.value = 0.03; comp.release.value = 0.4;
@@ -176,6 +195,21 @@ export class AudioEngine {
     src2.connect(bp).connect(this.rainLowG);
     this._out(this.rainLowG, 0.2);
   }
+  // the whale's wake: a deep rush of air that swells and sweeps across as it passes overhead
+  whoosh(dur = 9, panFrom = -0.7, panTo = 0.7) {
+    if (!this.started) return;
+    const ctx = this.ctx, t = ctx.currentTime + 0.05;
+    const s = this._shot(this.brown), bp = ctx.createBiquadFilter(), g = ctx.createGain(), p = ctx.createStereoPanner();
+    bp.type = 'bandpass'; bp.Q.value = 0.7;
+    bp.frequency.setValueAtTime(140, t); bp.frequency.linearRampToValueAtTime(520, t + dur * 0.5); bp.frequency.linearRampToValueAtTime(120, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.5, t + dur * 0.5); g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    p.pan.setValueAtTime(panFrom, t); p.pan.linearRampToValueAtTime(panTo, t + dur);
+    s.connect(bp).connect(g).connect(p);
+    p.connect(this.dry);
+    const w = ctx.createGain(); w.gain.value = 0.35; p.connect(w).connect(this.reverb);
+    s.loop = true; s.start(t); s.stop(t + dur);
+  }
+
   // distant thunder: a long, low, rolling rumble
   thunder() {
     if (!this.started) return;
@@ -376,24 +410,32 @@ export class AudioEngine {
     o.connect(g).connect(this.music); o.start(t); o.stop(t + dur + 1.1);
   }
   _scheduleMusic() {
-    const ctx = this.ctx, B = this.beat;
+    const ctx = this.ctx;
     while (this.musicTime < ctx.currentTime + 2) {
+      // the score follows the world: bright by day, warm at golden hour, sparse and low at night,
+      // hushed in the rain (decided per phrase, so moods change at phrase boundaries)
+      const md = this.mood || { night: 0, rain: 0, golden: 0 };
+      const set = md.rain > 0.5 ? CHORDS_RAIN : md.night > 0.5 ? CHORDS_NIGHT : md.golden > 0.5 ? CHORDS_GOLDEN : CHORDS;
+      const B = this.beat * (1 + 0.35 * md.night + 0.2 * md.rain + 0.12 * md.golden);
       const bar = B * 12; // one chord per phrase
-      const c = CHORDS[this.chordIndex % CHORDS.length];
+      const c = set[this.chordIndex % set.length];
       const t0 = this.musicTime;
       for (const m of c.pad) this._pad(m, t0, bar);
       this._bass(c.root, t0, bar);
       // one or two gentle phrases, with breathing room
       let t = t0 + B * (1 + Math.floor(Math.random() * 2));
-      const phrases = Math.random() < 0.55 ? 1 : 2;
+      const busy = 0.45 * (1 - md.night) * (1 - md.rain);
+      const phrases = md.night > 0.5 && Math.random() < 0.3 ? 0 : Math.random() < 1 - busy ? 1 : 2;
+      const lowOct = md.night > 0.5 && Math.random() < 0.5 ? -12 : 0;
+      const vel = 1 - 0.3 * md.night - 0.2 * md.rain;
       for (let p = 0; p < phrases && t < t0 + bar - B * 3; p++) {
         const motif = pick(MOTIFS);
         const base = Math.floor(Math.random() * 2);
         for (const [step, len] of motif) {
           const idx = base + step;
-          const m = PENTA[idx % 5] + 12 * Math.floor(idx / 5) + 12;
+          const m = PENTA[idx % 5] + 12 * Math.floor(idx / 5) + 12 + lowOct;
           const human = rand(-0.02, 0.03);
-          this._piano(m, t + human, rand(0.7, 1));
+          this._piano(m, t + human, rand(0.7, 1) * vel);
           if (Math.random() < 0.2) this._piano(m - 12, t + human + 0.01, 0.35);
           t += len * B;
         }
@@ -425,6 +467,7 @@ export class AudioEngine {
       this.nextWhale = rand(45, 75) * (1 - 0.35 * (s.night || 0));
     }
     const night = s.night || 0, rain = s.rain || 0;
+    this.mood = { night, rain, golden: s.golden || 0 };
     this.rainG.gain.setTargetAtTime(0.11 * rain, t, 1.5);
     this.rainLowG.gain.setTargetAtTime(0.05 * rain, t, 1.5);
     this.nextThunder = (this.nextThunder ?? 20) - dt;

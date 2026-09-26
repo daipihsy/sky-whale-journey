@@ -559,7 +559,7 @@ export function buildGrass(hf, heightTex, maskTex) {
       uTime: { value: 0 }, uCenter: { value: new THREE.Vector2() }, uR: { value: R },
       uHeight: { value: heightTex }, uMask: { value: maskTex },
       uNear: { value: new THREE.Vector4(NEAR.x0, NEAR.z0, NEAR.x1 - NEAR.x0, NEAR.z1 - NEAR.z0) },
-      uSun: { value: new THREE.Vector3() }, uPlayer: { value: new THREE.Vector3(1e5, 0, 1e5) },
+      uSun: { value: new THREE.Vector3() }, uPlayer: { value: new THREE.Vector3(1e5, 0, 1e5) }, uGust: { value: new THREE.Vector3() },
     },
   ]);
   uniforms.uHeight.value = heightTex;
@@ -575,6 +575,7 @@ export function buildGrass(hf, heightTex, maskTex) {
       uniform sampler2D uHeight, uMask;
       uniform vec4 uNear;
       uniform vec3 uPlayer;
+      uniform vec3 uGust; // xy: direction, z: strength (a sudden gust, like the whale's wake)
       varying float vT, vShade, vDist, vFlower;
       varying vec3 vCol;
       void main() {
@@ -600,6 +601,11 @@ export function buildGrass(hf, heightTex, maskTex) {
         float w = (0.25 + 0.55 * gust) * (0.8 + 0.2 * sin(uTime * 3.1 + aOff.z * 30.0));
         vec2 wdir = normalize(vec2(0.8, 0.45));
         p.xz += wdir * w * t * t * height * 0.9;
+        if (uGust.z > 0.001) {
+          float ripple = 0.75 + 0.25 * sin(dot(wp, uGust.xy) * 0.35 - uTime * 6.0);
+          p.xz += uGust.xy * uGust.z * ripple * t * t * height * 1.6;
+          w += uGust.z * 0.6;
+        }
         p.y = t * height * (1.0 - 0.25 * w * t);
         // blades part around the traveller's feet
         vec2 dp = wp - uPlayer.xz;

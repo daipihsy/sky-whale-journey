@@ -60,7 +60,7 @@ uniform sampler2D tDepth;
 uniform sampler3D tNoise;
 uniform mat4 uProjInv, uCamWorld;
 uniform vec3 uCamPos;
-uniform float uTime, uNear, uFar;
+uniform float uTime, uNear, uFar, uFrame;
 uniform vec2 uRes;
 varying vec2 vUv;
 ${SKY_GLSL}
@@ -113,7 +113,7 @@ void main() {
   const int STEPS = 44;
   float span = t1 - t0;
   float stepLen = span / float(STEPS);
-  float jitter = hash12(gl_FragCoord.xy + fract(uTime * 7.13) * 61.0);
+  float jitter = hash12(gl_FragCoord.xy + fract(uFrame * 0.6180339) * 61.0); // a new offset every frame, even when time stands still
   float T = 1.0;
   vec3 L = vec3(0.0);
   float cosT = dot(dir, uLightDir);
@@ -208,7 +208,7 @@ export class VolumetricClouds extends Pass {
       uniforms: {
         tDepth: { value: null }, tNoise: { value: this.noise }, uProjInv: { value: new THREE.Matrix4() },
         uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() }, uTime: { value: 0 },
-        uNear: { value: 0.1 }, uFar: { value: 1 }, uRes: { value: new THREE.Vector2() },
+        uNear: { value: 0.1 }, uFar: { value: 1 }, uRes: { value: new THREE.Vector2() }, uFrame: { value: 0 },
         ...SKY,
       },
       vertexShader: vert,
@@ -251,6 +251,7 @@ export class VolumetricClouds extends Pass {
     u.uCamWorld.value.copy(cam.matrixWorld);
     u.uCamPos.value.setFromMatrixPosition(cam.matrixWorld);
     u.uTime.value = this.time;
+    u.uFrame.value = (u.uFrame.value + 1) % 100000;
     renderer.setRenderTarget(this.rt);
     this.marchQuad.render(renderer);
     // accumulate over frames (ping-pong history)

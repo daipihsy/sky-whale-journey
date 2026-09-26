@@ -4,6 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>天空之鲸 · 旅途</title>
+<meta name="description" content="浏览器里的奇幻旅程：披着橙色斗篷的小旅人奔向远方的城堡，一头巨大的座头鲸在云海与雪山之间巡游。昼夜、天气、呼唤鲸鱼，全部由代码实时生成。" />
+<meta name="theme-color" content="#dfe9f2" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="天空之鲸 · 旅途" />
+<meta property="og:description" content="小旅人奔向城堡，巨鲸在云海之上巡游。可自由探索、呼唤鲸鱼、切换昼夜与天气。" />
+<meta property="og:image" content="https://daipihsy.github.io/sky-whale-journey/docs/og.jpg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:url" content="https://daipihsy.github.io/sky-whale-journey/" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://daipihsy.github.io/sky-whale-journey/docs/og.jpg" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23f7d9a8'/%3E%3Cstop offset='1' stop-color='%23a9c6ea'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M8 34c6-9 20-12 32-8 5 2 9 1 12-3l-2 7 5 4-7-1c-3 4-9 7-17 7-9 0-18-2-23-6z' fill='%234d639a'/%3E%3Cpath d='M16 38c8 3 18 3 26-1-6 5-18 6-26 1z' fill='%23eef1f6'/%3E%3C/svg%3E" />
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe9f2; }
   canvas { display: block; cursor: grab; touch-action: none; }
@@ -12,7 +24,10 @@
     background: radial-gradient(ellipse at 50% 55%, #fffdf6 0%, #fff6e2 45%, #f7ecd8 100%); }
   #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
     font: 300 15px/1.4 "PingFang SC", "Helvetica Neue", sans-serif; letter-spacing: .4em; color: #b9a887;
-    transition: opacity 1.2s ease; pointer-events: none; }
+    transition: opacity 1.2s ease; pointer-events: none; flex-direction: column; gap: 14px; }
+  #loading .ls { font-size: 12px; letter-spacing: .3em; opacity: .75; min-height: 1.4em; }
+  #loading .lb { width: 180px; height: 2px; background: rgba(185,168,135,.2); border-radius: 1px; overflow: hidden; }
+  #loadbar { height: 100%; background: #c9b58f; transform: scaleX(0); transform-origin: left; transition: transform .5s ease; }
   .ui { position: fixed; pointer-events: none; font: 400 12.5px/1.6 "PingFang SC", "Helvetica Neue", sans-serif;
     color: rgba(255,255,255,.92); text-shadow: 0 1px 6px rgba(40,60,90,.55); letter-spacing: .06em; transition: opacity .8s ease; }
   #hud { left: 50%; bottom: 18px; transform: translateX(-50%); text-align: center; white-space: nowrap; opacity: .9; }
@@ -43,6 +58,14 @@
   #timeui select option { color: #222; }
   #timeui .jumps { margin-top: 6px; }
   #timeui .weather button.on { background: rgba(255,255,255,.34); border-color: rgba(255,255,255,.5); }
+  #photobar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); padding: 10px 14px; border-radius: 12px;
+    font: 400 12px/1.6 "PingFang SC", "Helvetica Neue", sans-serif; color: #fff; letter-spacing: .04em; white-space: nowrap;
+    background: rgba(20,30,50,.35); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.16); }
+  #photobar b { font-weight: 500; color: #fff3d6; }
+  #photobar .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  #photobar .state { flex: 1; opacity: .8; }
+  #photobar button { font: inherit; color: #fff; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 3px 12px; cursor: pointer; }
+  #photobar button:hover { background: rgba(255,255,255,.26); }
   @media (max-width: 760px) { #hud { font-size: 11px; white-space: normal; width: 92%; } }
 </style>
 <script type="importmap">
@@ -58,7 +81,7 @@
 </head>
 <body>
 <div id="veil"></div>
-<div id="loading">世界正在苏醒</div>
+<div id="loading"><div class="lt">世界正在苏醒</div><div class="ls" id="loadtext"></div><div class="lb"><div id="loadbar"></div></div></div>
 <div id="mode" class="ui"></div>
 <div id="toast" class="ui"></div>
 <div id="sound" class="ui">♪ 点击画面或按任意键开启声音</div>
@@ -84,8 +107,13 @@
   <div class="row jumps">
     <button data-h="6.1">日出</button><button data-h="12">正午</button><button data-h="17.75">黄昏</button><button data-h="23">夜晚</button>
   </div>
+  <div class="row jumps"><button id="tphoto" title="拍照模式（C）">📷 拍照模式</button></div>
 </div>
-<div id="hud" class="ui"><b>WASD</b> 移动 · <b>Shift</b> 慢走 · <b>空格</b> 跳跃（空中按住滑翔） · <b>F</b> 呼唤 · <b>拖动鼠标</b> 转视角 · <b>滚轮</b> 远近 · <b>P</b> 自动旅程 · <b>M</b> 静音 · <b>Q</b> 画质 · <b>T</b> 时间暂停 · <b>Y</b> 天气 · <b>[ ]</b> 调时间 · <b>H</b> 隐藏说明</div>
+<div id="photobar" style="display:none">
+  <div><b>拍照模式</b> · WASD 移动 · R/F 升降 · Shift 加速 · 拖动转向 · 滚轮焦距 · 空格 定格 · G 景深 · Enter 保存 · C 退出</div>
+  <div class="row"><span class="state"></span><button id="psave">保存照片</button><button id="pexit">退出</button></div>
+</div>
+<div id="hud" class="ui"><b>WASD</b> 移动 · <b>Shift</b> 慢走 · <b>空格</b> 跳跃（空中按住滑翔） · <b>F</b> 呼唤 · <b>拖动鼠标</b> 转视角 · <b>滚轮</b> 远近 · <b>P</b> 自动旅程 · <b>M</b> 静音 · <b>Q</b> 画质 · <b>T</b> 时间暂停 · <b>Y</b> 天气 · <b>C</b> 拍照 · <b>[ ]</b> 调时间 · <b>H</b> 隐藏说明</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

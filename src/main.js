@@ -4,6 +4,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { N8AOPass } from 'n8ao';
 import { CSM } from 'three/addons/csm/CSM.js';
@@ -27,6 +28,10 @@ import { buildExtras } from './extras.js';
 import { clamp, lerp, smoothstep } from './noise.js';
 
 const params = new URLSearchParams(location.search);
+// remembered between visits (per browser): quality, weather, time speed, sound, panels
+const PREFS_KEY = 'skywhale.prefs.v1';
+const prefs = (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })();
+function savePrefs(patch) { Object.assign(prefs, patch); try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* private mode */ } }
 const $ = (id) => document.getElementById(id);
 const loadingEl = $('loading'), veil = $('veil');
 
@@ -120,8 +125,19 @@ fill.position.set(-0.5, 0.45, 0.75);
 scene.add(fill);
 
 // ---------------------------------------------------------------------------
-function build() {
+// build the world in stages, letting the loading screen show progress between them
+const loadText = $('loadtext'), loadBar = $('loadbar');
+const stageTimes = [];
+async function stage(label, frac) {
+  stageTimes.push([label, performance.now()]);
+  if (loadText) loadText.textContent = label;
+  if (loadBar) loadBar.style.transform = `scaleX(${frac})`;
+  // let the page paint (but never stall if the tab is in the background)
+  await Promise.race([new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))), new Promise((r) => setTimeout(r, 60))]);
+}
+async function build() {
   const t0 = performance.now();
+  await stage('铺开大地', 0.05);
   const path = new JourneyPath();
   const hf = new HeightField(path);
   const heightTex = hf.makeTexture();
@@ -136,6 +152,7 @@ function build() {
   const falls = buildWaterfalls(hf);
   scene.add(falls);
 
+  await stage('筑起城堡', 0.22);
   const cmats = makeCastleMaterials();
   const castle = buildCastle(cmats, hf);
   scene.add(castle);
@@ -144,6 +161,7 @@ function build() {
   const extras = buildExtras(hf, castle, cmats, path);
   scene.add(extras);
 
+  await stage('种下森林', 0.4);
   const trees = buildTrees(hf, path);
   scene.add(trees);
   const grass = buildGrass(hf, heightTex, maskTex);
@@ -153,8 +171,10 @@ function build() {
   const rocks = buildRocks(hf, path);
   scene.add(rocks);
 
+  await stage('唤醒巨鲸', 0.6);
   const whale = new Whale(600);
   scene.add(whale.group);
+  await stage('铺满云海', 0.8);
   const clouds = new Clouds();
   scene.add(clouds.mesh);
   const birds = new Birds();
@@ -179,14 +199,17 @@ function build() {
   const p0 = path.sample(0);
   ctrl.place(p0.x, p0.z, Math.atan2(p0.tx, p0.tz));
 
-  console.log(`built in ${(performance.now() - t0).toFixed(0)} ms; path ${path.length.toFixed(0)} m; walls ${walls.length}`);
+  stageTimes.push(['end', performance.now()]);
+  console.log(`built in ${(performance.now() - t0).toFixed(0)} ms (` + stageTimes.slice(0, -1).map(([l, t], i) => `${l} ${(stageTimes[i + 1][1] - t).toFixed(0)}`).join(', ') + `); path ${path.length.toFixed(0)} m; walls ${walls.length}`);
   return { path, hf, sky, terrain, water, falls, castle, extras, trees, grass, flowers, whale, clouds, birds, hero, ctrl, cmats, fireflies };
 }
 
-const W = build();
+const W = await build();
 window.__W = W;
 const rain = new Rain();
 scene.add(rain.mesh);
+// the traveller's clothes and hair stay matte in the rain
+W.hero.group.traverse((o) => { if (o.material && !o.material.isShaderMaterial) { o.material.defines = { ...(o.material.defines || {}), NO_WET: '' }; o.material.needsUpdate = true; } });
 csmify(scene);
 injectSkyAll(scene);
 // unlit veils (floating-island falls and the like) dim with the light
@@ -239,6 +262,10 @@ const raysPass = new ShaderPass({
     }`,
 });
 composer.addPass(raysPass);
+// depth of field for photo mode (renders scene depth, so it stays off otherwise)
+const bokeh = new BokehPass(scene, camera, { focus: 8, aperture: 0.00025, maxblur: 0.006 });
+bokeh.enabled = false;
+composer.addPass(bokeh);
 composer.addPass(new OutputPass());
 const finalPass = new ShaderPass({
   uniforms: { tDiffuse: { value: null }, uAspect: { value: 1 }, uTime: { value: 0 } },
@@ -292,6 +319,81 @@ const input = new Input(renderer.domElement);
 const audio = new AudioEngine();
 const hud = $('hud'), modeEl = $('mode'), soundEl = $('sound'), toastEl = $('toast');
 let hudVisible = true;
+// ---- photo mode: a free camera, a frozen world if wanted, depth of field, high-resolution saves
+const photo = { active: false, frozen: false, dof: false, pos: new THREE.Vector3(), yaw: 0, pitch: 0, fov: 50 };
+const photoBar = $('photobar');
+function setPhoto(on) {
+  photo.active = on;
+  if (on) {
+    photo.pos.copy(camera.position);
+    const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+    photo.yaw = e.y; photo.pitch = e.x; photo.fov = camera.fov;
+    photo.frozen = false; photo.dof = false;
+  } else {
+    photo.frozen = false; bokeh.enabled = false;
+    journey.modeChanged = true; // glide back to the story camera
+  }
+  for (const el of [hud, timeUI, modeEl, soundEl]) el.style.visibility = on ? 'hidden' : '';
+  photoBar.style.display = on ? '' : 'none';
+  updatePhotoBar();
+}
+function updatePhotoBar() {
+  photoBar.querySelector('.state').textContent = (photo.frozen ? '已定格' : '世界流动中') + ' · 景深' + (photo.dof ? '开' : '关') + ' · 焦距 ' + photo.fov.toFixed(0) + '°';
+}
+function photoControls(dt, look) {
+  const sp = (input.down('ShiftLeft', 'ShiftRight') ? 60 : 12) * dt;
+  photo.yaw -= look.dx * 0.004 * (photo.fov / 50);
+  photo.pitch = clamp(photo.pitch - look.dy * 0.004 * (photo.fov / 50), -1.5, 1.5);
+  if (look.wheel) { photo.fov = clamp(photo.fov * Math.pow(1.08, look.wheel), 12, 90); updatePhotoBar(); }
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(photo.pitch, photo.yaw, 0, 'YXZ'));
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(q), r = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+  if (input.down('KeyW', 'ArrowUp')) photo.pos.addScaledVector(f, sp);
+  if (input.down('KeyS', 'ArrowDown')) photo.pos.addScaledVector(f, -sp);
+  if (input.down('KeyD', 'ArrowRight')) photo.pos.addScaledVector(r, sp);
+  if (input.down('KeyA', 'ArrowLeft')) photo.pos.addScaledVector(r, -sp);
+  if (input.down('KeyR')) photo.pos.y += sp;
+  if (input.down('KeyF')) photo.pos.y -= sp;
+  photo.pos.y = Math.max(photo.pos.y, Math.max(W.hf.height(photo.pos.x, photo.pos.z), 0) + 0.4);
+  if (input.hit('Space')) { photo.frozen = !photo.frozen; updatePhotoBar(); }
+  if (input.hit('KeyG')) { photo.dof = !photo.dof; updatePhotoBar(); }
+  if (input.hit('Enter')) savePhoto();
+  if (input.hit('Escape')) setPhoto(false);
+}
+function applyPhotoCamera() {
+  camera.position.copy(photo.pos);
+  camera.quaternion.setFromEuler(new THREE.Euler(photo.pitch, photo.yaw, 0, 'YXZ'));
+  camera.fov = photo.fov;
+  camera.updateProjectionMatrix();
+  bokeh.enabled = photo.dof;
+  if (photo.dof) bokeh.uniforms.focus.value = camera.position.distanceTo(W.ctrl.pos) + 0.3; // focus on the traveller
+}
+// render at up to twice the resolution (a few frames first, so the clouds settle) and download it
+function savePhoto() {
+  const prev = renderer.getPixelRatio();
+  const target = Math.min(prev * 2, 3840 / Math.max(1, window.innerWidth), 4);
+  setPixelRatio(target);
+  camera.updateMatrixWorld();
+  for (let i = 0; i < 8; i++) { if (reflection && reflection.enabled !== false) reflection.update(scene, camera); composer.render(); }
+  const dims = `${renderer.domElement.width}×${renderer.domElement.height}`;
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) { toast('保存失败'); return; }
+    const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `天空之鲸-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.jpg`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast(`照片已保存（${dims}）`);
+  }, 'image/jpeg', 0.95);
+  setPixelRatio(prev);
+}
+window.__photo = photo;
+
+function setHud(on, save = true) {
+  hudVisible = on;
+  hud.style.opacity = on ? 1 : 0; timeUI.style.opacity = on ? 1 : 0; timeUI.style.pointerEvents = on ? '' : 'none';
+  if (save) savePrefs({ hud: on });
+}
 function toast(msg, sec = 3) {
   toastEl.textContent = msg; toastEl.style.opacity = 1;
   clearTimeout(toast._t); toast._t = setTimeout(() => (toastEl.style.opacity = 0), sec * 1000);
@@ -302,14 +404,18 @@ let tDragging = false, tLastUI = 0;
 tSlider.addEventListener('input', () => { tDragging = true; setHours(+tSlider.value); });
 tSlider.addEventListener('change', () => { tDragging = false; });
 tPlay.addEventListener('click', () => setTimePlaying(!tod.playing));
-tSpeed.addEventListener('change', () => { tod.speed = +tSpeed.value; });
+tSpeed.addEventListener('change', () => { tod.speed = +tSpeed.value; savePrefs({ speed: tod.speed }); });
 for (const b of timeUI.querySelectorAll('[data-h]')) b.addEventListener('click', () => setHours(+b.dataset.h));
 for (const b of timeUI.querySelectorAll('[data-w]')) b.addEventListener('click', () => setWeather(b.dataset.w));
+$('tphoto').addEventListener('click', () => setPhoto(true));
+$('psave').addEventListener('click', () => savePhoto());
+$('pexit').addEventListener('click', () => setPhoto(false));
+photoBar.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON') e.preventDefault(); });
 // keep keyboard focus on the world after using the panel (so WASD and T keep working)
 timeUI.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON') e.preventDefault(); });
 timeUI.addEventListener('pointerup', () => setTimeout(() => document.activeElement?.blur?.(), 0));
 tSpeed.addEventListener('change', () => tSpeed.blur());
-if (params.has('tspeed')) { tod.speed = +params.get('tspeed'); tSpeed.value = String(tod.speed); }
+if (params.has('tspeed') || prefs.speed) { tod.speed = +(params.get('tspeed') ?? prefs.speed); tSpeed.value = String(tod.speed); }
 function updateTimePanel(force = false) {
   const now = performance.now();
   if (!force && now - tLastUI < 200) return;
@@ -357,7 +463,7 @@ const sLightStart = sGate - 30;
 const bellPos = W.extras.userData.bellPos || new THREE.Vector3(-170, 45, 170);
 let whaleT = params.has('wt') ? +params.get('wt') : 0;
 const timeScale = params.has('ts') ? +params.get('ts') : 1;
-let time = 0, last = performance.now(), started = false;
+let time = 0, last = performance.now(), started = false, realDt = 1 / 60;
 const paused = params.has('pause');
 let whaleAnswerAt = -1, lastCallAt = -100;
 // the whale's visit: where will the traveller be when it passes overhead, and what must it clear
@@ -379,6 +485,7 @@ function whaleVisit() {
   return v;
 }
 let visitInfo = null;
+const gustDir = new THREE.Vector3();
 
 function nearestS(pos, around) {
   const P = W.path;
@@ -634,21 +741,25 @@ function update(dt) {
   whaleT += dt;
   const c = W.ctrl, j = journey;
   const look = input.consumeLook();
+  // photo mode takes the keys and the mouse
+  if (input.hit('KeyC')) setPhoto(!photo.active);
+  const photoOn = photo.active;
+  if (photoOn) photoControls(realDt, look);
 
   // --- mode switching
-  const ax = input.axes();
-  const wantsControl = ax.x !== 0 || ax.y !== 0 || input.hit('Space') || look.dx !== 0 || look.dy !== 0 || look.wheel !== 0;
+  const ax = photoOn ? { x: 0, y: 0 } : input.axes();
+  const wantsControl = !photoOn && (ax.x !== 0 || ax.y !== 0 || input.hit('Space') || look.dx !== 0 || look.dy !== 0 || look.wheel !== 0);
   if (j.mode === 'auto' && wantsControl && !params.has('cam') && j.phase === 'run') setMode('play');
   else if (input.hit('KeyP')) setMode(j.mode === 'auto' ? 'play' : 'auto');
   if (j.mode === 'play' && performance.now() - Math.max(input.lastActivity, input.lastLook) > 45000) setMode('auto');
-  if (input.hit('KeyM')) { audio.setMuted(!audio.muted); toast(audio.muted ? '已静音' : '声音已开启'); }
-  if (input.hit('KeyH')) { hudVisible = !hudVisible; hud.style.opacity = hudVisible ? 1 : 0; timeUI.style.opacity = hudVisible ? 1 : 0; timeUI.style.pointerEvents = hudVisible ? '' : 'none'; }
-  if (input.hit('KeyQ')) applyQuality(quality === 'high' ? 'medium' : quality === 'medium' ? 'low' : 'high');
+  if (input.hit('KeyM')) { audio.setMuted(!audio.muted); savePrefs({ muted: audio.muted }); toast(audio.muted ? '已静音' : '声音已开启'); }
+  if (input.hit('KeyH')) setHud(!hudVisible);
+  if (!photoOn && input.hit('KeyQ')) applyQuality(quality === 'high' ? 'medium' : quality === 'medium' ? 'low' : 'high');
 
   // --- movement input
   const move = new THREE.Vector3();
   let walk = false, jump = false, jumpHeld = false;
-  let call = input.hit('KeyF');
+  let call = !photoOn && input.hit('KeyF');
   if (j.mode === 'auto' && j.phase === 'run' && !j.autoCalled && j.s > S_AUTO_CALL && !W.whale.visitState) { call = true; j.autoCalled = true; }
   if (j.s < 20) j.autoCalled = false;
   const watching = j.mode === 'auto' && visitInfo && Math.abs(whaleT - (visitInfo.tPass + 1)) < 7;
@@ -669,8 +780,8 @@ function update(dt) {
     move.addScaledVector(f, ax.y).addScaledVector(r, ax.x);
     if (move.lengthSq() > 1) move.normalize();
     walk = input.down('ShiftLeft', 'ShiftRight');
-    jump = input.hit('Space');
-    jumpHeld = input.down('Space');
+    jump = !photoOn && input.hit('Space');
+    jumpHeld = !photoOn && input.down('Space');
     j.s = nearestS(c.pos, j.s).s;
   }
   const wasGrounded = c.grounded;
@@ -700,7 +811,11 @@ function update(dt) {
   }
   // the overhead pass: a deep song, a swell of music, a slow glow
   if (visitInfo) {
-    if (!visitInfo.sung && whaleT > visitInfo.tPass - 5) { visitInfo.sung = true; audio.whaleSong(1.0, 0); audio.gateSwell(); W.whale.glow = 1; }
+    if (!visitInfo.sung && whaleT > visitInfo.tPass - 5) {
+      visitInfo.sung = true;
+      audio.whaleSong(1.0, whalePan()); audio.gateSwell(); W.whale.glow = 1;
+      audio.whoosh(9, whalePan(), -whalePan() || 0.6);
+    }
     if (!W.whale.visitState) visitInfo = null;
   }
 
@@ -755,7 +870,8 @@ function update(dt) {
 
   // --- character, camera and world
   W.hero.update(dt, time, c, (x, z, y) => c.ground(x, z, y));
-  updateCamera(dt, time, look);
+  if (photoOn) applyPhotoCamera();
+  else updateCamera(dt, time, look);
   W.whale.update(whaleT, dt, camera);
   W.clouds.update(time, camera);
   if (vclouds) vclouds.time = time;
@@ -776,6 +892,13 @@ function update(dt) {
   gu.uTime.value = time;
   gu.uCenter.value.set(camera.position.x, camera.position.z).lerp(new THREE.Vector2(tp.x, tp.z), 0.6);
   if (gu.uPlayer) gu.uPlayer.value.set(tp.x, tp.y, tp.z);
+  // the whale's wake: a gust that flattens the grass and flings the cape as it sweeps overhead
+  {
+    const g = visitInfo ? Math.exp(-(((whaleT - visitInfo.tPass - 1) / 4) ** 2)) : 0;
+    const dir = W.whale.route && W.whale.route.tangent ? W.whale.route.tangent(W.whale.station, gustDir).setY(0).normalize() : gustDir.set(1, 0, 0);
+    gu.uGust.value.set(dir.x, dir.z, g);
+    W.hero.gust = (W.hero.gust || new THREE.Vector3()).set(dir.x * 7 * g, 1.8 * g, dir.z * 7 * g);
+  }
   W.water.material.uniforms.uTime.value = time;
   W.falls.userData.material.uniforms.uTime.value = time;
   for (const m of W.trees.userData.materials) if (m.userData.shader) m.userData.shader.uniforms.uTime.value = time;
@@ -786,7 +909,7 @@ function update(dt) {
   const sp = SUN_DIR.clone().multiplyScalar(1000).add(camera.position).project(camera);
   raysPass.uniforms.uSun.value.set(sp.x * 0.5 + 0.5, sp.y * 0.5 + 0.5);
   const facing = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).dot(SUN_DIR);
-  raysPass.uniforms.uStrength.value = sp.z < 1 ? smoothstep(0.35, 0.8, facing) * SKY.uSunVis.value : 0;
+  raysPass.uniforms.uStrength.value = sp.z < 1 ? smoothstep(0.35, 0.8, facing) * SKY.uSunVis.value * (1 + 1.6 * weather.cur.fog) : 0; // shafts are stronger in fog
   raysPass.uniforms.uCol.value.copy(tod.lightColor);
   finalPass.uniforms.uTime.value = time % 10;
 
@@ -797,6 +920,7 @@ function update(dt) {
       altitude: tp.y - Math.max(0, W.hf.height(tp.x, tp.z)) + tp.y * 0.3,
       gliding: c.gliding, speed: Math.hypot(c.vel.x, c.vel.z), water: env.water, falls: env.falls,
       whalePan: whalePan(), birds: env.birds, veil: j.veil, night: tod.night, rain: weather.cur.rain,
+      golden: smoothstep(14, 5, tod.sunElev) * smoothstep(-6, 0, tod.sunElev),
     });
   }
   input.endFrame();
@@ -827,7 +951,11 @@ function applyTimeOfDay(dt) {
   refreshEnv();
   updateTimePanel();
 }
-function setWeather(kind) { weather.set(kind); toast('天气：' + weather.label()); updateTimePanel(true); }
+function setWeather(kind, announce = true) {
+  weather.set(kind);
+  if (announce) { savePrefs({ weather: kind }); toast('天气：' + weather.label()); }
+  updateTimePanel(true);
+}
 function setHours(h) { tod.setHours(h); refreshEnv(true); updateTimePanel(true); }
 function setTimePlaying(on) { tod.playing = on; toast(on ? '时间流动' : '时间暂停'); updateTimePanel(true); }
 window.__time = (h) => { setHours(h); applyTimeOfDay(0); };
@@ -857,8 +985,10 @@ function sampleEnvironment(p) {
 
 function frame(now) {
   requestAnimationFrame(frame);
-  let dt = Math.max(0, Math.min((now - last) / 1000, 0.05)) * timeScale;
+  realDt = Math.max(0, Math.min((now - last) / 1000, 0.05));
+  let dt = realDt * timeScale;
   last = now;
+  if (photo.active && photo.frozen) dt = 0;
   if (paused) dt = params.has('step') ? 1 / 60 : 0;
   try { update(dt || 1e-4); } catch (e) { if (!frame.err) console.error('update failed:', e.stack.replace(/\n/g, ' | ')); frame.err = true; }
   if (reflection && reflection.enabled !== false && journey.veil < 0.99) reflection.update(scene, camera);
@@ -871,7 +1001,7 @@ function frame(now) {
     setTimeout(() => loadingEl.remove(), 1500);
   }
   if (params.has('stats')) statsTick(now);
-  adaptResolution(now);
+  if (!photo.active) adaptResolution(now);
 }
 
 // fast-forward (no rendering) with continuity statistics — used for automated checks
@@ -947,7 +1077,7 @@ function applyQuality(q, announce = true) {
   if (reflection) { reflection.scale = Math.max(Q.refl, 0.2); reflection.enabled = Q.refl > 0; }
   if (vclouds) vclouds.scale = Q.clouds;
   setPixelRatio(Math.min(window.devicePixelRatio, Q.pr, q === 'high' ? 1.25 : Q.pr));
-  if (announce) toast('画质：' + Q.name + '（按 Q 切换）');
+  if (announce) { savePrefs({ q }); toast('画质：' + Q.name + '（按 Q 切换）'); }
 }
 
 let fN = 0, fLast = performance.now();
@@ -963,4 +1093,18 @@ function statsTick(now) {
 
 modeEl.textContent = '自动旅程 · 按方向键或拖动鼠标接管';
 if (params.has('q')) applyQuality(quality, false);
+else if (prefs.q in QUALITY) applyQuality(prefs.q, false);
+// the rest of the remembered settings (the address bar wins)
+if (!params.has('weather') && prefs.weather) setWeather(prefs.weather, false);
+if (prefs.muted) audio.setMuted(true);
+if (prefs.hud === false) setHud(false, false);
+// compile every shader before the first frame without freezing the page (parallel where supported)
+await stage('准备光影', 0.92);
+{
+  const tc = performance.now();
+  update(1e-4);
+  try { await renderer.compileAsync(scene, camera); } catch (e) { /* older browsers: compile on first draw */ }
+  console.log(`shaders ready in ${(performance.now() - tc).toFixed(0)} ms`);
+}
+await stage('出发', 1);
 requestAnimationFrame(frame);

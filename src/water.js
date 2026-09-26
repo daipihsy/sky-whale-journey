@@ -59,6 +59,21 @@ export function buildWater(heightTex) {
         float dist = length(vW - cameraPosition);
         float amp = 0.07 * (1.0 - smoothstep(80.0, 900.0, dist)) + 0.012;
         vec3 N = normalize(vec3((n1 - 0.875) * amp * 2.0, 1.0, (n2 - 0.875) * amp * 2.0));
+        // rain: expanding rings where drops land (near the camera)
+        if (uRain > 0.01 && dist < 160.0) {
+          vec2 rp = p * 0.7;
+          for (int k = 0; k < 2; k++) {
+            vec2 q = rp + float(k) * vec2(0.5, 0.37);
+            vec2 cell = floor(q), f = fract(q) - 0.5;
+            float h = fract(sin(dot(cell, vec2(127.1, 311.7)) + float(k) * 17.0) * 43758.5453);
+            vec2 c = (vec2(fract(h * 13.7), fract(h * 71.3)) - 0.5) * 0.5;
+            float ph = fract(uTime * (0.9 + h * 0.6) + h);
+            vec2 d = f - c; float r = length(d), rad = ph * 0.45;
+            float ring = sin((r - rad) * 55.0) * smoothstep(0.08, 0.0, abs(r - rad)) * (1.0 - ph);
+            N.xz += (d / max(r, 1e-3)) * ring * 0.35 * uRain * (1.0 - smoothstep(50.0, 160.0, dist));
+          }
+          N = normalize(N);
+        }
         vec3 R = reflect(V, N);
         R.y = abs(R.y);
         vec3 sky = skyColor(normalize(R));

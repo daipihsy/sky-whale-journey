@@ -781,6 +781,7 @@ export class Character {
     const gY = pos.y;
     if (!this.cape.ready) this.cape.reset(frame);
     const breeze = new THREE.Vector3(0.7 + 0.4 * Math.sin(t * 0.37), 0.4 + this.glideW * 3.5 + (st.vy < -2 ? 2 : 0), 0.5 + 0.3 * Math.sin(t * 0.23 + 1));
+    if (this.gust) breeze.add(this.gust); // e.g. the wake of the whale sweeping overhead
     const sub = 3, h = dt / sub;
     for (let s = 0; s < sub; s++) {
       this.cape.t = t + s * h;

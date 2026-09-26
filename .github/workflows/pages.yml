@@ -34,7 +34,7 @@ jobs:
         run: |
           mkdir -p _site/node_modules/three/build _site/node_modules/three/examples _site/node_modules/three-mesh-bvh _site/node_modules/n8ao
           cp index.html _site/
-          cp -r src _site/
+          cp -r src docs _site/
           cp node_modules/three/build/three.module.js _site/node_modules/three/build/
           cp -r node_modules/three/examples/jsm _site/node_modules/three/examples/
           cp -r node_modules/three-mesh-bvh/build _site/node_modules/three-mesh-bvh/
