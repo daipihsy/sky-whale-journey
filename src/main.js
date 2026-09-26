@@ -15,7 +15,7 @@ import { Fireflies } from './night.js';
 import { Weather, Rain } from './weather.js';
 import { JourneyPath, HeightField, buildTerrain, CASTLE } from './world.js';
 import { buildCastle, buildOutworks, makeCastleMaterials, DECKS, OBST } from './castle.js';
-import { Whale } from './whale.js';
+import { Whale, WhalePod } from './whale.js';
 import { Character } from './character.js';
 import { Controller, Obstacles } from './controller.js';
 import { Input } from './input.js';
@@ -135,6 +135,8 @@ async function stage(label, frac) {
   // let the page paint (but never stall if the tab is in the background)
   await Promise.race([new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))), new Promise((r) => setTimeout(r, 60))]);
 }
+// the pink whale's place on the loop: seconds behind the blue one, and metres higher
+const PINK_LAP_OFFSET = -90, PINK_Y_OFFSET = 70; // ≥ ~230 m apart all round the loop
 async function build() {
   const t0 = performance.now();
   await stage('铺开大地', 0.05);
@@ -174,6 +176,10 @@ async function build() {
   await stage('唤醒巨鲸', 0.6);
   const whale = new Whale(600);
   scene.add(whale.group);
+  // her companion: a little smaller, pink, following the same loop a while behind and a little higher
+  const pink = new Whale(520, { palette: 'pink', lapOffset: PINK_LAP_OFFSET, yOffset: PINK_Y_OFFSET, plankton: 4000 });
+  scene.add(pink.group);
+  const whales = [whale, pink], pod = new WhalePod(whales);
   await stage('铺满云海', 0.8);
   const clouds = new Clouds();
   scene.add(clouds.mesh);
@@ -201,7 +207,7 @@ async function build() {
 
   stageTimes.push(['end', performance.now()]);
   console.log(`built in ${(performance.now() - t0).toFixed(0)} ms (` + stageTimes.slice(0, -1).map(([l, t], i) => `${l} ${(stageTimes[i + 1][1] - t).toFixed(0)}`).join(', ') + `); path ${path.length.toFixed(0)} m; walls ${walls.length}`);
-  return { path, hf, sky, terrain, water, falls, castle, extras, trees, grass, flowers, whale, clouds, birds, hero, ctrl, cmats, fireflies };
+  return { path, hf, sky, terrain, water, falls, castle, extras, trees, grass, flowers, whale, whales, pod, clouds, birds, hero, ctrl, cmats, fireflies };
 }
 
 const W = await build();
@@ -479,11 +485,22 @@ function predictTraveller(tau) {
 }
 const groundAt = (x, z) => Math.max(W.hf.height(x, z), 0);
 const clearAt = (x, z) => Math.max(groundAt(x, z), spireTip.y * smoothstep(170, 70, Math.hypot(x - spireTip.x, z - spireTip.z)));
-function whaleVisit() {
-  const v = W.whale.visit(whaleT, predictTraveller, groundAt, clearAt);
-  if (v) visitInfo = { tPass: v.tPass, sung: false };
-  return v;
+// plan the visit a second ahead, in the background (instantly inside the fast-forward tests)
+let summoning = false;
+function whaleVisit(onDone) {
+  if (summoning) return;
+  const lead = 1.0, t0 = whaleT + lead;
+  const predict = (tau) => predictTraveller(tau + lead);
+  const done = (r) => {
+    summoning = false;
+    if (r) visitInfo = { tPass: r.visit.tPass, sung: false, whale: r.whale };
+    onDone && onDone(r);
+  };
+  summoning = true;
+  if (fastForward) done(W.pod.summon(t0, W.ctrl.pos, predict, groundAt, clearAt));
+  else W.pod.summonAsync(t0, W.ctrl.pos, predict, groundAt, clearAt).then(done);
 }
+let fastForward = false;
 let visitInfo = null;
 const gustDir = new THREE.Vector3();
 
@@ -589,7 +606,7 @@ function directorCamera(s, dt, t) {
   const vw = visitWeight();
   let fov = shot.fov, sy = shot.sy, dist = shot.dist;
   if (vw > 0) {
-    const wp = W.whale.position;
+    const wp = visitInfo.whale.position;
     const before = whaleT < visitInfo.tPass;
     if (before) visitInfo.yaw = Math.atan2(wp.x - p.x, -(wp.z - p.z)); // stop chasing once it is overhead
     const dYaw = clamp(Math.atan2(Math.sin(visitInfo.yaw - yaw), Math.cos(visitInfo.yaw - yaw)), -1.2, 1.2);
@@ -647,7 +664,7 @@ function orbitCamera(dt, look) {
   // during the whale's pass, drift the view up toward it unless the player is steering the camera
   const vw = visitWeight();
   if (vw > 0 && performance.now() - input.lastLook > 2500) {
-    const wp = W.whale.position;
+    const wp = visitInfo.whale.position;
     const wYaw = Math.atan2(wp.x - c.pos.x, -(wp.z - c.pos.z));
     orbit.yaw = angLerp(orbit.yaw, wYaw, 1 - Math.exp(-dt * 0.8 * vw));
     orbit.pitch = lerp(orbit.pitch, -0.28, 1 - Math.exp(-dt * 0.8 * vw));
@@ -701,9 +718,10 @@ function updateCamera(dt, t, look) {
 
   const dbg = params.get('cam');
   if (dbg === 'whale') {
-    const wp = W.whale.position;
+    const dw = W.whales[+(params.get('cw') ?? 0)] || W.whale; // &cw=1: the pink whale
+    const wp = dw.position;
     const off = new THREE.Vector3(+(params.get('ox') ?? 0), +(params.get('oy') ?? -60), +(params.get('oz') ?? 520));
-    if (params.has('rel')) off.applyQuaternion(W.whale.root.quaternion);
+    if (params.has('rel')) off.applyQuaternion(dw.root.quaternion);
     camera.position.copy(wp).add(off);
     camera.lookAt(wp);
     camera.fov = +(params.get('fov') ?? 40); camera.updateProjectionMatrix();
@@ -760,7 +778,7 @@ function update(dt) {
   const move = new THREE.Vector3();
   let walk = false, jump = false, jumpHeld = false;
   let call = !photoOn && input.hit('KeyF');
-  if (j.mode === 'auto' && j.phase === 'run' && !j.autoCalled && j.s > S_AUTO_CALL && !W.whale.visitState) { call = true; j.autoCalled = true; }
+  if (j.mode === 'auto' && j.phase === 'run' && !j.autoCalled && j.s > S_AUTO_CALL && !W.pod.visitor && !summoning) { call = true; j.autoCalled = true; }
   if (j.s < 20) j.autoCalled = false;
   const watching = j.mode === 'auto' && visitInfo && Math.abs(whaleT - (visitInfo.tPass + 1)) < 7;
   if (j.phase === 'hold' || j.relocate) {
@@ -805,18 +823,18 @@ function update(dt) {
   if (whaleAnswerAt > 0 && time > whaleAnswerAt) {
     whaleAnswerAt = -1;
     audio.whaleSong(0.9, whalePan());
-    W.whale.glow = 1;
-    // it turns and comes to the traveller (unless it is already on its way)
-    if (whaleVisit()) toast('鲸鱼听见了你的呼唤', 3);
+    for (const w of W.whales) w.glow = Math.max(w.glow, 0.6);
+    // one of them turns and comes to the traveller (unless one is already on its way)
+    whaleVisit((r) => { if (r) { r.whale.glow = 1; toast(r.whale.palette === 'pink' ? '粉色的鲸鱼听见了你的呼唤' : '蓝色的鲸鱼听见了你的呼唤', 3); } });
   }
   // the overhead pass: a deep song, a swell of music, a slow glow
   if (visitInfo) {
     if (!visitInfo.sung && whaleT > visitInfo.tPass - 5) {
       visitInfo.sung = true;
-      audio.whaleSong(1.0, whalePan()); audio.gateSwell(); W.whale.glow = 1;
+      audio.whaleSong(1.0, whalePan()); audio.gateSwell(); visitInfo.whale.glow = 1;
       audio.whoosh(9, whalePan(), -whalePan() || 0.6);
     }
-    if (!W.whale.visitState) visitInfo = null;
+    if (!visitInfo.whale.visitState) visitInfo = null;
   }
 
   // --- journey: into the light at the castle gate, then back to the meadow
@@ -872,7 +890,8 @@ function update(dt) {
   W.hero.update(dt, time, c, (x, z, y) => c.ground(x, z, y));
   if (photoOn) applyPhotoCamera();
   else updateCamera(dt, time, look);
-  W.whale.update(whaleT, dt, camera);
+  for (const w of W.whales) w.update(whaleT, dt, camera);
+  W.pod.update(whaleT, dt); // keep them apart
   W.clouds.update(time, camera);
   if (vclouds) vclouds.time = time;
   W.birds.update(time, dt);
@@ -895,7 +914,8 @@ function update(dt) {
   // the whale's wake: a gust that flattens the grass and flings the cape as it sweeps overhead
   {
     const g = visitInfo ? Math.exp(-(((whaleT - visitInfo.tPass - 1) / 4) ** 2)) : 0;
-    const dir = W.whale.route && W.whale.route.tangent ? W.whale.route.tangent(W.whale.station, gustDir).setY(0).normalize() : gustDir.set(1, 0, 0);
+    const gw = visitInfo ? visitInfo.whale : W.whale;
+    const dir = gw.route && gw.route.tangent ? gw.route.tangent(gw.station, gustDir).setY(0).normalize() : gustDir.set(1, 0, 0);
     gu.uGust.value.set(dir.x, dir.z, g);
     W.hero.gust = (W.hero.gust || new THREE.Vector3()).set(dir.x * 7 * g, 1.8 * g, dir.z * 7 * g);
   }
@@ -947,7 +967,7 @@ function applyTimeOfDay(dt) {
   const lamps = smoothstep(4, -6, tod.sunElev);
   W.cmats.winLit.emissiveIntensity = 1.25 + 3.2 * lamps;
   for (const t of tintables) t.m.color.copy(t.base).multiply(_tint.copy(SKY.uAmbientTint.value));
-  W.whale.viewH = renderer.domElement.height;
+  for (const w of W.whales) w.viewH = renderer.domElement.height;
   refreshEnv();
   updateTimePanel();
 }
@@ -961,7 +981,7 @@ function setTimePlaying(on) { tod.playing = on; toast(on ? '时间流动' : '时
 window.__time = (h) => { setHours(h); applyTimeOfDay(0); };
 
 function whalePan() {
-  const v = W.whale.position.clone().project(camera);
+  const v = (visitInfo ? visitInfo.whale : W.whale).position.clone().project(camera);
   return clamp(v.x, -0.8, 0.8) * (v.z < 1 ? 1 : -1);
 }
 
@@ -1007,6 +1027,8 @@ function frame(now) {
 // fast-forward (no rendering) with continuity statistics — used for automated checks
 window.__advance = (seconds, step = 1 / 30) => {
   const stats = { camJump: 0, camJumpAt: 0, whaleJump: 0, travOut: 0, minCamClear: 1e9, loops: 0, whaleOffFrame: 0, frames: 0 };
+  W.pod.closest = Infinity;
+  fastForward = true;
   update(step);
   const prevCam = camera.position.clone(), prevWhale = W.whale.position.clone();
   let prevPhase = journey.phase;
@@ -1028,8 +1050,10 @@ window.__advance = (seconds, step = 1 / 30) => {
     v.copy(W.whale.position).project(camera);
     if (Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05 || v.z > 1) stats.whaleOffFrame++;
     stats.minCamClear = Math.min(stats.minCamClear, camera.position.y - Math.max(W.hf.height(camera.position.x, camera.position.z), 0));
+    stats.whaleGap = W.pod.closest; // closest the two whales' (conservative) bodies came
   }
   stats.s = journey.s; stats.phase = journey.phase; stats.pos = W.ctrl.pos.toArray().map((x) => +x.toFixed(1));
+  fastForward = false;
   return stats;
 };
 // simulate held keys for automated checks: __keys(['KeyW'], seconds)

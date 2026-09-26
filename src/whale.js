@@ -98,19 +98,43 @@ function makeKnobs() {
 }
 const KNOBS = makeKnobs();
 
-// ----------------------------------------------------------------------------- skin textures
-function makeSkin(L) {
-  const W = 2048, H = 1024;
-  const col = document.createElement('canvas'); col.width = W; col.height = H;
-  const g = col.getContext('2d');
-  const hgt = new Float32Array(W * H); // height field for the normal map
+// ----------------------------------------------------------------------------- palettes
+// The blue whale, and its smaller pink companion. Skin, fins, night glow and trails per palette.
+export const PALETTES = {
+  blue: {
+    spine: '#3a4a72', back: '#566b99', flank: '#7a8fbb', mist: '#a9b9d8', belly: '#eef1f6', warmBelly: '#f6f1e7', pleat: '#b3bdd2',
+    dapple: '238,242,250', wisp: '232,239,252', scar: '222,229,242', mouth: 'rgba(40,50,78,0.85)',
+    knob: ['rgba(150,164,200,0.95)', 'rgba(58,70,104,0.95)', 'rgba(40,50,80,0)'], eyeRing: 'rgba(52,62,92,0.9)', crease: 'rgba(40,50,78,0.6)',
+    fin: '#566b99', finEdge: '#a9b9d8', finWhite: '#eef1f8', mottle: [0.42, 0.5, 0.7], lum: [0.18, 0.55],
+    bio: [0.16, 0.8, 1.0], bio2: [0.12, 1.0, 0.74], bio3: [0.5, 0.42, 1.0], bioRim: [0.2, 0.75, 1.0],
+    speck: [0.2, 0.85, 1.0], speck2: [0.15, 1.0, 0.72], speck3: [0.62, 0.5, 1.0], trail: [0.25, 0.9, 1.0],
+  },
+  pink: {
+    spine: '#b25c79', back: '#cc7d97', flank: '#e0a2b6', mist: '#efc8d4', belly: '#fcf1f4', warmBelly: '#fcf2ec', pleat: '#e5c2cd',
+    dapple: '253,241,245', wisp: '254,238,245', scar: '249,230,238', mouth: 'rgba(112,48,72,0.8)',
+    knob: ['rgba(240,196,212,0.95)', 'rgba(134,64,92,0.95)', 'rgba(112,50,78,0)'], eyeRing: 'rgba(122,56,82,0.9)', crease: 'rgba(112,48,72,0.6)',
+    fin: '#cc7d97', finEdge: '#efc8d4', finWhite: '#fcf1f4', mottle: [0.72, 0.36, 0.5], lum: [0.3, 0.72],
+    bio: [1.0, 0.42, 0.78], bio2: [0.86, 0.38, 1.0], bio3: [1.0, 0.75, 0.88], bioRim: [1.0, 0.5, 0.86],
+    speck: [1.0, 0.5, 0.86], speck2: [0.85, 0.46, 1.0], speck3: [1.0, 0.82, 0.92], trail: [1.0, 0.56, 0.9],
+  },
+};
 
-  // A painterly, natural humpback skin: deep slate blue along the spine easing to soft blue-grey
-  // flanks, a misty band that melts into the white pleated belly, and gentle value variation.
-  const img = g.createImageData(W, H);
+// ----------------------------------------------------------------------------- skin textures
+// One pass over the skin paints every palette (same patterns, different colours) and a shared
+// normal map, so the second whale costs little extra to load.
+function makeSkins(names) {
+  const W = 2048, H = 1024;
+  const hgt = new Float32Array(W * H); // height field for the normal map
   const C = (h) => new THREE.Color(h);
-  const spine = C('#3a4a72'), back = C('#566b99'), flank = C('#7a8fbb'), mist = C('#a9b9d8');
-  const belly = C('#eef1f6'), warmBelly = C('#f6f1e7'), pleatC = C('#b3bdd2');
+  const sets = names.map((name) => {
+    const P = PALETTES[name];
+    const col = document.createElement('canvas'); col.width = W; col.height = H;
+    const g = col.getContext('2d');
+    return { name, P, col, g, img: g.createImageData(W, H),
+      spine: C(P.spine), back: C(P.back), flank: C(P.flank), mist: C(P.mist), belly: C(P.belly), warmBelly: C(P.warmBelly), pleatC: C(P.pleat) };
+  });
+  // A painterly, natural humpback skin: deep colour along the spine easing to softer flanks,
+  // a misty band that melts into the pale pleated belly, and gentle value variation.
   const c = new THREE.Color(), tmp = new THREE.Color();
   for (let y = 0; y < H; y++) {
     const v = y / H, ang = v * Math.PI * 2;
@@ -120,93 +144,102 @@ function makeSkin(L) {
       const u = x / W;
       const n = fbm(u * 14, aa * 2.4, 3), n2 = fbm(u * 60 + 7, aa * 10, 2);
       const bl = bellyLine(u) + n * 0.1 + 0.03 * Math.sin(u * 40 + aa * 2);
-      c.copy(spine).lerp(back, smoothstep(0.0, 0.9, aa)).lerp(flank, smoothstep(0.8, bl - 0.1, aa));
-      c.lerp(mist, smoothstep(bl - 0.45, bl - 0.02, aa) * 0.55);
-      c.multiplyScalar((1 + n * 0.1 + n2 * 0.04) * (1 - 0.08 * smoothstep(0.7, 0.95, u)));
-      let groove = 0;
       const wBelly = smoothstep(bl - 0.015, bl + 0.035, aa);
+      let groove = 0;
       if (wBelly > 0) {
-        tmp.copy(belly).lerp(warmBelly, smoothstep(0.12, 0.0, u) * 0.6 + n * 0.2);
         const pz = smoothstep(0.012, 0.05, u) * smoothstep(0.52, 0.4, u) * smoothstep(bl + 0.02, bl + 0.18, aa);
         groove = pz * (1 - smoothstep(0.0, 0.3, Math.abs(Math.sin(rel * PLEAT_F + u * 5))));
-        tmp.lerp(pleatC, groove * 0.75);
-        c.lerp(tmp, wBelly);
       }
       const i = (y * W + x) * 4;
-      img.data[i] = c.r * 255; img.data[i + 1] = c.g * 255; img.data[i + 2] = c.b * 255; img.data[i + 3] = 255;
+      for (const S of sets) {
+        c.copy(S.spine).lerp(S.back, smoothstep(0.0, 0.9, aa)).lerp(S.flank, smoothstep(0.8, bl - 0.1, aa));
+        c.lerp(S.mist, smoothstep(bl - 0.45, bl - 0.02, aa) * 0.55);
+        c.multiplyScalar((1 + n * 0.1 + n2 * 0.04) * (1 - 0.08 * smoothstep(0.7, 0.95, u)));
+        if (wBelly > 0) {
+          tmp.copy(S.belly).lerp(S.warmBelly, smoothstep(0.12, 0.0, u) * 0.6 + n * 0.2);
+          tmp.lerp(S.pleatC, groove * 0.75);
+          c.lerp(tmp, wBelly);
+        }
+        S.img.data[i] = c.r * 255; S.img.data[i + 1] = c.g * 255; S.img.data[i + 2] = c.b * 255; S.img.data[i + 3] = 255;
+      }
       hgt[y * W + x] = fbm(u * 120, v * 60, 2) * 0.12 - groove * 1.1;
     }
   }
-  g.putImageData(img, 0, 0);
-  const rnd = mulberry32(7);
   const vOf = (aa, side) => (side > 0 ? aa / (Math.PI * 2) : 1 - aa / (Math.PI * 2));
-  // soft pale dapples: densest just above the belly line, sparse and fine along the back
-  for (let i = 0; i < 6500; i++) {
-    const u = 0.03 + rnd() * 0.92, side = rnd() < 0.5 ? 1 : -1;
-    const bl = bellyLine(u), g1 = rnd() + rnd() + rnd() - 1.5; // ~gaussian
-    const aa = clamp(bl - Math.abs(g1) * 0.55 - 0.02, 0.02, Math.PI);
-    const near = smoothstep(bl - 0.7, bl, aa);
-    const r = (0.8 + rnd() * rnd() * 3.2) * (0.6 + 0.6 * near), a = (0.12 + rnd() * 0.4) * (0.35 + 0.65 * near);
-    const x = u * W, y = vOf(aa, side) * H;
-    const gr = g.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, `rgba(238,242,250,${a})`); gr.addColorStop(1, 'rgba(238,242,250,0)');
-    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
-  }
-  // a hint of sky: faint, blurred streaks flowing back along the flanks
-  g.save();
-  g.filter = 'blur(6px)';
-  g.lineCap = 'round';
-  for (let i = 0; i < 44; i++) {
-    const side = rnd() < 0.5 ? 1 : -1, u0 = 0.18 + rnd() * 0.6, len = 0.06 + rnd() * 0.16;
-    const aa0 = 0.55 + rnd() * (bellyLine(u0) - 0.8), bend = (rnd() - 0.5) * 0.25;
-    g.strokeStyle = `rgba(232,239,252,${0.08 + rnd() * 0.12})`;
-    g.lineWidth = 4 + rnd() * 12;
-    g.beginPath();
-    g.moveTo(u0 * W, vOf(aa0, side) * H);
-    g.quadraticCurveTo((u0 + len * 0.5) * W, vOf(aa0 + bend, side) * H, (u0 + len) * W, vOf(aa0 + bend * 0.4 + 0.05, side) * H);
-    g.stroke();
-  }
-  g.restore();
-  // a few faint, curved rake scars
-  for (let i = 0; i < 12; i++) {
-    const side = rnd() < 0.5 ? 1 : -1, u0 = 0.25 + rnd() * 0.5, aa0 = 0.7 + rnd() * 0.9;
-    const x = u0 * W, y = vOf(aa0, side) * H, len = 25 + rnd() * 50, ang = (rnd() - 0.5) * 0.6, bow = (rnd() - 0.5) * 10;
-    g.strokeStyle = `rgba(222,229,242,${0.08 + rnd() * 0.12})`; g.lineWidth = 0.8 + rnd() * 0.8;
-    for (let k = 0; k < 1 + Math.floor(rnd() * 2); k++) {
-      const oy = k * (3 + rnd() * 3);
-      g.beginPath(); g.moveTo(x, y + oy);
-      g.quadraticCurveTo(x + Math.cos(ang) * len * 0.5, y + oy + Math.sin(ang) * len * 0.5 + bow, x + Math.cos(ang) * len, y + oy + Math.sin(ang) * len);
+  const at = (u, a) => [u * W, (((a / (Math.PI * 2)) % 1) + 1) % 1 * H];
+  const maps = {};
+  for (const S of sets) {
+    const { g, P } = S;
+    g.putImageData(S.img, 0, 0);
+    const rnd = mulberry32(7);
+    // soft pale dapples: densest just above the belly line, sparse and fine along the back
+    for (let i = 0; i < 6500; i++) {
+      const u = 0.03 + rnd() * 0.92, side = rnd() < 0.5 ? 1 : -1;
+      const bl = bellyLine(u), g1 = rnd() + rnd() + rnd() - 1.5; // ~gaussian
+      const aa = clamp(bl - Math.abs(g1) * 0.55 - 0.02, 0.02, Math.PI);
+      const near = smoothstep(bl - 0.7, bl, aa);
+      const r = (0.8 + rnd() * rnd() * 3.2) * (0.6 + 0.6 * near), a = (0.12 + rnd() * 0.4) * (0.35 + 0.65 * near);
+      const x = u * W, y = vOf(aa, side) * H;
+      const gr = g.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, `rgba(${P.dapple},${a})`); gr.addColorStop(1, `rgba(${P.dapple},0)`);
+      g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+    }
+    // a hint of sky: faint, blurred streaks flowing back along the flanks
+    g.save();
+    g.filter = 'blur(6px)';
+    g.lineCap = 'round';
+    for (let i = 0; i < 44; i++) {
+      const side = rnd() < 0.5 ? 1 : -1, u0 = 0.18 + rnd() * 0.6, len = 0.06 + rnd() * 0.16;
+      const aa0 = 0.55 + rnd() * (bellyLine(u0) - 0.8), bend = (rnd() - 0.5) * 0.25;
+      g.strokeStyle = `rgba(${P.wisp},${0.08 + rnd() * 0.12})`;
+      g.lineWidth = 4 + rnd() * 12;
+      g.beginPath();
+      g.moveTo(u0 * W, vOf(aa0, side) * H);
+      g.quadraticCurveTo((u0 + len * 0.5) * W, vOf(aa0 + bend, side) * H, (u0 + len) * W, vOf(aa0 + bend * 0.4 + 0.05, side) * H);
       g.stroke();
     }
-  }
-  const at = (u, a) => [u * W, (((a / (Math.PI * 2)) % 1) + 1) % 1 * H];
-  // mouth line
-  g.strokeStyle = 'rgba(40,50,78,0.85)'; g.lineWidth = 2.2;
-  for (const s of [1, -1]) {
-    g.beginPath();
-    for (let u = 0.002; u < 0.335; u += 0.002) { const [x, y] = at(u, s * mouthAngle(u)); u < 0.004 ? g.moveTo(x, y) : g.lineTo(x, y); }
-    g.stroke();
-  }
-  // tubercles: dark knobs with a light top
-  for (const [ku, ka, kh] of KNOBS) {
-    const [x, y] = at(ku, ka), r = 3 + (kh / 0.0036) * 3.5;
-    for (const oy of [-H, 0, H]) {
-      const gr = g.createRadialGradient(x - r * 0.25, y + oy - r * 0.3, 0, x, y + oy, r);
-      gr.addColorStop(0, 'rgba(150,164,200,0.95)'); gr.addColorStop(0.45, 'rgba(58,70,104,0.95)'); gr.addColorStop(1, 'rgba(40,50,80,0)');
-      g.fillStyle = gr; g.beginPath(); g.arc(x, y + oy, r, 0, Math.PI * 2); g.fill();
+    g.restore();
+    // a few faint, curved rake scars
+    for (let i = 0; i < 12; i++) {
+      const side = rnd() < 0.5 ? 1 : -1, u0 = 0.25 + rnd() * 0.5, aa0 = 0.7 + rnd() * 0.9;
+      const x = u0 * W, y = vOf(aa0, side) * H, len = 25 + rnd() * 50, ang = (rnd() - 0.5) * 0.6, bow = (rnd() - 0.5) * 10;
+      g.strokeStyle = `rgba(${P.scar},${0.08 + rnd() * 0.12})`; g.lineWidth = 0.8 + rnd() * 0.8;
+      for (let k = 0; k < 1 + Math.floor(rnd() * 2); k++) {
+        const oy = k * (3 + rnd() * 3);
+        g.beginPath(); g.moveTo(x, y + oy);
+        g.quadraticCurveTo(x + Math.cos(ang) * len * 0.5, y + oy + Math.sin(ang) * len * 0.5 + bow, x + Math.cos(ang) * len, y + oy + Math.sin(ang) * len);
+        g.stroke();
+      }
     }
+    // mouth line
+    g.strokeStyle = P.mouth; g.lineWidth = 2.2;
+    for (const s of [1, -1]) {
+      g.beginPath();
+      for (let u = 0.002; u < 0.335; u += 0.002) { const [x, y] = at(u, s * mouthAngle(u)); u < 0.004 ? g.moveTo(x, y) : g.lineTo(x, y); }
+      g.stroke();
+    }
+    // tubercles: dark knobs with a light top
+    for (const [ku, ka, kh] of KNOBS) {
+      const [x, y] = at(ku, ka), r = 3 + (kh / 0.0036) * 3.5;
+      for (const oy of [-H, 0, H]) {
+        const gr = g.createRadialGradient(x - r * 0.25, y + oy - r * 0.3, 0, x, y + oy, r);
+        gr.addColorStop(0, P.knob[0]); gr.addColorStop(0.45, P.knob[1]); gr.addColorStop(1, P.knob[2]);
+        g.fillStyle = gr; g.beginPath(); g.arc(x, y + oy, r, 0, Math.PI * 2); g.fill();
+      }
+    }
+    // small, wise eyes with a crease above
+    for (const s of [1, -1]) {
+      const [x, y] = at(EYE[0], s * EYE[1]);
+      g.fillStyle = P.eyeRing; g.beginPath(); g.ellipse(x, y, 10, 6, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(22,24,34,1)'; g.beginPath(); g.ellipse(x, y, 5.5, 3.4, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(190,200,225,0.85)'; g.beginPath(); g.arc(x - 1.5, y - s * 1, 1.1, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = P.crease; g.lineWidth = 1.5;
+      for (const k of [1, 2]) { g.beginPath(); g.ellipse(x + 2, y, 11 + k * 5, 6 + k * 4, 0, s > 0 ? Math.PI * 1.1 : Math.PI * 0.1, s > 0 ? Math.PI * 1.9 : Math.PI * 0.9); g.stroke(); }
+    }
+    const map = new THREE.CanvasTexture(S.col);
+    map.colorSpace = THREE.SRGBColorSpace; map.wrapT = THREE.RepeatWrapping; map.anisotropy = 8;
+    maps[S.name] = map;
   }
-  // small, wise eyes with a crease above
-  for (const s of [1, -1]) {
-    const [x, y] = at(EYE[0], s * EYE[1]);
-    g.fillStyle = 'rgba(52,62,92,0.9)'; g.beginPath(); g.ellipse(x, y, 10, 6, 0, 0, Math.PI * 2); g.fill();
-    g.fillStyle = 'rgba(22,24,34,1)'; g.beginPath(); g.ellipse(x, y, 5.5, 3.4, 0, 0, Math.PI * 2); g.fill();
-    g.fillStyle = 'rgba(190,200,225,0.85)'; g.beginPath(); g.arc(x - 1.5, y - s * 1, 1.1, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = 'rgba(40,50,78,0.6)'; g.lineWidth = 1.5;
-    for (const k of [1, 2]) { g.beginPath(); g.ellipse(x + 2, y, 11 + k * 5, 6 + k * 4, 0, s > 0 ? Math.PI * 1.1 : Math.PI * 0.1, s > 0 ? Math.PI * 1.9 : Math.PI * 0.9); g.stroke(); }
-  }
-  const map = new THREE.CanvasTexture(col);
-  map.colorSpace = THREE.SRGBColorSpace; map.wrapT = THREE.RepeatWrapping; map.anisotropy = 8;
 
   // tubercles in the height field too
   for (const [ku, ka, kh] of KNOBS) {
@@ -232,7 +265,7 @@ function makeSkin(L) {
   ng.putImageData(nimg, 0, 0);
   const normalMap = new THREE.CanvasTexture(nc);
   normalMap.wrapT = THREE.RepeatWrapping; normalMap.anisotropy = 8;
-  return { map, normalMap };
+  return { maps, normalMap };
 }
 
 // Bioluminescence (night): photophore streams along the flanks, speckles, glowing throat pleats,
@@ -340,6 +373,8 @@ function buildBody(L, boneU, nU = 320, nV = 200) {
     const u = clamp(t * t * 0.35 + t * 0.65 * (t * 0.35 + 0.65), 0, 1);
     const sec = section(u);
     const ma = u < 0.34 ? mouthAngle(u) : 0;
+    // only the tubercles near this ring can touch it (they sit on the head; most rings have none)
+    const knobs = KNOBS.filter(([ku]) => Math.abs(u - ku) < 3 * 0.0055);
     for (let j = 0; j <= nV; j++) {
       const a = (j / nV) * Math.PI * 2;
       const [px, py, pz] = surfacePoint(u, a, sec);
@@ -353,7 +388,7 @@ function buildBody(L, boneU, nU = 320, nV = 200) {
       // splash guard and blowholes on top of the head
       disp += 0.0032 * Math.exp(-(aa * aa) / 0.025 - ((u - 0.212) ** 2) / 0.0003);
       disp -= 0.0016 * Math.exp(-((aa - 0.05) ** 2) / 0.0012 - ((u - 0.232) ** 2) / 0.00006) + 0.0016 * Math.exp(-((aa + 0.05) ** 2) / 0.0012 - ((u - 0.232) ** 2) / 0.00006);
-      for (const [ku, ka, kh] of KNOBS) {
+      for (const [ku, ka, kh] of knobs) {
         const du = (u - ku) / 0.0055, dA = Math.atan2(Math.sin(a - ka), Math.cos(a - ka)) / 0.05;
         const d2 = du * du + dA * dA;
         if (d2 < 9) disp += kh * Math.exp(-d2);
@@ -428,11 +463,12 @@ function loft(planform, nS, nC, colorFn) {
   return g;
 }
 
-const FIN_BLUE = new THREE.Color('#566b99'), FIN_EDGE = new THREE.Color('#a9b9d8'), FIN_WHITE = new THREE.Color('#eef1f8');
+const finColours = (pal) => ({ main: new THREE.Color(pal.fin), edge: new THREE.Color(pal.finEdge), white: new THREE.Color(pal.finWhite) });
 
 // long, slender pectoral flipper (over a third of the body) with the scalloped leading edge of a humpback
 const FLIPPER_LEN = 0.37;
-function flipperGeo(L) {
+function flipperGeo(L, pal) {
+  const { main: FIN_BLUE, edge: FIN_EDGE, white: FIN_WHITE } = finColours(pal);
   const len = FLIPPER_LEN * L;
   const c = new THREE.Color();
   const knob = (s) => (s > 0.06 ? Math.pow(Math.abs(Math.sin(s * Math.PI * 11.5)), 0.65) * smoothstep(0.06, 0.12, s) : 0);
@@ -455,7 +491,8 @@ function flipperGeo(L) {
 
 // broad flukes with a central notch and a serrated, pale trailing edge
 const FLUKE_SPAN = 0.5;
-function flukeGeo(L) {
+function flukeGeo(L, pal) {
+  const { main: FIN_BLUE, edge: FIN_EDGE, white: FIN_WHITE } = finColours(pal);
   const span = FLUKE_SPAN * L, half = span / 2;
   const c = new THREE.Color();
   const make = (side) => loft((s) => {
@@ -490,7 +527,7 @@ float wn3(vec3 p) { vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f)
 float cloudF(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * wn3(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; } return s; }
 `;
 
-function whaleMaterial(opts, bioMap = null) {
+function whaleMaterial(opts, bioMap = null, pal = PALETTES.blue) {
   const mat = new THREE.MeshPhysicalMaterial({
     roughness: 0.5, metalness: 0, sheen: 0.55, sheenRoughness: 0.5, sheenColor: new THREE.Color('#dde6ff'),
     clearcoat: 0.12, clearcoatRoughness: 0.55, ...opts,
@@ -501,6 +538,9 @@ function whaleMaterial(opts, bioMap = null) {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uGlow = mat.userData.glow;
     sh.uniforms.uBioAmt = mat.userData.bio;
+    const v3 = (a) => ({ value: new THREE.Vector3(...a) });
+    Object.assign(sh.uniforms, { uMottleCol: v3(pal.mottle), uLumRange: { value: new THREE.Vector2(...pal.lum) },
+      uBioA: v3(pal.bio), uBioB: v3(pal.bio2), uBioC: v3(pal.bio3), uBioRim: v3(pal.bioRim) });
     if (bioMap) sh.uniforms.uBio = { value: bioMap };
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vBioPos;')
@@ -508,6 +548,8 @@ function whaleMaterial(opts, bioMap = null) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
 uniform float uGlow, uBioAmt;
+uniform vec3 uMottleCol, uBioA, uBioB, uBioC, uBioRim;
+uniform vec2 uLumRange;
 varying vec3 vBioPos;
 #ifdef BIO_MAP
 uniform sampler2D uBio;
@@ -519,10 +561,10 @@ ${CLOUD_GLSL}`)
 {
   // fins: the same soft mottling and pale dapples as the body, on the blue parts only
   float lum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-  float blueness = 1.0 - smoothstep(0.18, 0.55, lum);
+  float blueness = 1.0 - smoothstep(uLumRange.x, uLumRange.y, lum);
   float mottle = cloudF(vBioPos / 34.0);
   diffuseColor.rgb *= 1.0 + (mottle - 0.5) * 0.35 * blueness;
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.5, 0.7), smoothstep(0.58, 0.8, mottle) * 0.35 * blueness);
+  diffuseColor.rgb = mix(diffuseColor.rgb, uMottleCol, smoothstep(0.58, 0.8, mottle) * 0.35 * blueness);
   vec3 sp = vBioPos / 1.8; vec3 ci = floor(sp);
   float speck = step(0.94, bioHash(ci + 3.7)) * smoothstep(0.4, 0.1, length(fract(sp) - 0.5));
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.87, 0.94), speck * 0.55 * blueness);
@@ -563,10 +605,10 @@ ${CLOUD_GLSL}`)
     float wave = pow(0.5 + 0.5 * sin(along * 16.0 - t * 1.5), 5.0);
     float breath = 0.8 + 0.2 * sin(t * 0.45);
     float tw = 0.55 + 0.45 * sin(t * (0.7 + bio.b * 2.6) + bio.b * 43.0);
-    vec3 col = mix(vec3(0.16, 0.8, 1.0), vec3(0.12, 1.0, 0.74), smoothstep(0.3, 0.75, bio.b));
-    col = mix(col, vec3(0.5, 0.42, 1.0), smoothstep(0.88, 0.95, bio.b) * 0.8);
+    vec3 col = mix(uBioA, uBioB, smoothstep(0.3, 0.75, bio.b));
+    col = mix(col, uBioC, smoothstep(0.88, 0.95, bio.b) * 0.8);
     vec3 E = col * (bio.r * tw * (1.3 + 3.2 * wave) + bio.g * 0.22 * (0.6 + 1.2 * wave)) * breath;
-    E += vec3(0.2, 0.75, 1.0) * fres * fres * 0.8 * breath;
+    E += uBioRim * fres * fres * 0.8 * breath;
     totalEmissiveRadiance += E * uNight * uBioAmt * (1.0 + uGlow * 1.6);
   }
 }`);
@@ -578,7 +620,7 @@ ${CLOUD_GLSL}`)
 // Glowing plankton shed by the whale at night: world-space specks that drift off its skin and
 // fin tips and hang in its wake.
 class Plankton {
-  constructor(whale, n = 6500) {
+  constructor(whale, n = 6500, pal = PALETTES.blue) {
     this.whale = whale; this.n = n;
     this.pos = new Float32Array(n * 3); this.vel = new Float32Array(n * 3);
     this.age = new Float32Array(n).fill(-1); this.life = new Float32Array(n).fill(1);
@@ -594,7 +636,8 @@ class Plankton {
     this.geo = g;
     this.mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: true,
-      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uPx: { value: 900 } }]),
+      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uPx: { value: 900 },
+        uColA: { value: new THREE.Vector3(...pal.speck) }, uColB: { value: new THREE.Vector3(...pal.speck2) }, uColC: { value: new THREE.Vector3(...pal.speck3) } }]),
       vertexShader: `
         #include <common>
         #include <fog_pars_vertex>
@@ -615,12 +658,13 @@ class Plankton {
         #include <common>
         #include <fog_pars_fragment>
         varying float vA, vSeed;
+        uniform vec3 uColA, uColB, uColC;
         void main() {
           float d = length(gl_PointCoord - 0.5);
           float a = smoothstep(0.5, 0.0, d); a *= a;
           float tw = 0.6 + 0.4 * sin(uSkyTime * (1.0 + vSeed * 4.0) + vSeed * 60.0);
-          vec3 col = mix(vec3(0.2, 0.85, 1.0), vec3(0.15, 1.0, 0.72), vSeed);
-          col = mix(col, vec3(0.62, 0.5, 1.0), step(0.93, vSeed) * 0.7);
+          vec3 col = mix(uColA, uColB, vSeed);
+          col = mix(col, uColC, step(0.93, vSeed) * 0.7);
           gl_FragColor = vec4(col * a * vA * tw * 1.8 * uNight, 1.0);
           #ifdef USE_FOG
             gl_FragColor.rgb *= 1.0 - fogAmountAt(vFogWorld);
@@ -850,14 +894,17 @@ class SwimPath extends Track {
 // overhead, climbs away and rejoins the loop exactly where (and when) it would have been anyway.
 // The route is a copy of the loop before and after, spliced with a smooth flight between.
 class VisitTrack extends Track {
-  constructor(loop, lap, t0, predict, groundAt, clearAt) {
+  // opts.tShift / opts.yOff: this whale's place on the shared loop (time offset, height offset)
+  constructor(loop, lap, t0, predict, groundAt, clearAt, opts = {}) {
     super();
     const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
-    const sStart = loop.stationAt(t0, lap);
-    const speedAt = (t) => loop.ahead(loop.stationAt(t - 0.5, lap), loop.stationAt(t + 0.5, lap));
+    const tShift = opts.tShift || 0, yOff = opts.yOff || 0;
+    const stAt = (t) => loop.stationAt(t + tShift, lap);
+    const sStart = stAt(t0);
+    const speedAt = (t) => loop.ahead(stAt(t - 0.5), stAt(t + 0.5));
     const v0 = speedAt(t0);
     const PRE = 450, LEAD = 20, AVG_IN = 50, AVG_OUT = 32, V_PASS = 26;
-    const pt = (s) => loop.point(s, V());
+    const pt = (s) => { const p = loop.point(s, V()); p.y += yOff; return p; };
     // waypoints for a given pass point and loop re-entry station
     const route = (target, sEnd, turnPref = 0) => {
       const D0 = pt(sStart + 260), T0 = loop.tangent(sStart + 260, V());
@@ -914,9 +961,9 @@ class VisitTrack extends Track {
       const target = predict(tPass);
       let D = 90;
       best = null;
-      for (let k = 0; k < 3; k++) D = timing(bestRoute(target, loop.stationAt(t0 + D, lap))).D;
+      for (let k = 0; k < 3; k++) D = timing(bestRoute(target, stAt(t0 + D))).D;
       for (let dD = -30; dD <= 30; dD += 5) {
-        const Dc = D + dD, sEnd = loop.stationAt(t0 + Dc, lap), r = bestRoute(target, sEnd);
+        const Dc = D + dD, sEnd = stAt(t0 + Dc), r = bestRoute(target, sEnd);
         const cost = Math.abs(timing(r).D - Dc) * 0.1 + r.align * 1.2 + r.sharp * 1.5 + Dc * 0.004;
         if (!best || cost < best.cost) best = { cost, D: Dc, sEnd, r, target };
       }
@@ -1035,10 +1082,33 @@ const BONE_U = [0.0, 0.18, 0.36, 0.52, 0.64, 0.75, 0.85, 0.93, 0.985];
 const UNDULATE = [0.0, 0.005, 0.009, 0.016, 0.026, 0.038, 0.052, 0.07, 0.1];
 const FOLLOW = 0.72; // how closely the spine follows the path (1 = like a snake, 0 = rigid)
 
+// built once and shared by every whale: the skins (one per palette), normal map, glow map, loop
+let SHARED = null;
+function shared() {
+  if (!SHARED) {
+    const { maps, normalMap } = makeSkins(Object.keys(PALETTES));
+    SHARED = { maps, normalMap, bioMap: makeBioMap(), path: new SwimPath() };
+  }
+  return SHARED;
+}
+// conservative spheres along the body for keeping whales apart (u along the length, radius / length;
+// wide around the flippers' reach and the flukes)
+const SPHERE_U = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+const SPHERE_R = [0.07, 0.11, 0.14, 0.32, 0.36, 0.34, 0.24, 0.12, 0.1, 0.2, 0.28];
+
 export class Whale {
-  constructor(length = 300) {
+  // opts.palette: 'blue' | 'pink'; opts.lapOffset: seconds behind on the loop; opts.yOffset: metres higher
+  constructor(length = 300, opts = {}) {
     this.L = length;
     const L = length;
+    const pal = PALETTES[opts.palette || 'blue'];
+    this.palette = opts.palette || 'blue';
+    this.lapOffset = opts.lapOffset || 0;
+    this.yOffset = opts.yOffset || 0;
+    this.liftPlan = null; this._emLift = 0;
+    const T0 = performance.now(), times = (this.buildTimes = {});
+    const S = shared();
+    times.shared = performance.now() - T0;
     this.group = new THREE.Group();
     this.root = new THREE.Group();
     this.group.add(this.root);
@@ -1055,19 +1125,20 @@ export class Whale {
       parent = b;
     }
     const skel = new THREE.Skeleton(this.bones);
-    const { map, normalMap } = makeSkin(L);
-    const bodyMat = whaleMaterial({ map, normalMap, normalScale: new THREE.Vector2(0.7, 0.7) }, makeBioMap());
+    const bodyMat = whaleMaterial({ map: S.maps[this.palette], normalMap: S.normalMap, normalScale: new THREE.Vector2(0.7, 0.7) }, S.bioMap, pal);
     this.mats = [bodyMat];
+    let tb = performance.now();
     this.body = new THREE.SkinnedMesh(buildBody(L, BONE_U), bodyMat);
+    times.body = performance.now() - tb; tb = performance.now();
     this.body.add(this.bones[0]);
     this.body.bind(skel);
     this.body.frustumCulled = false;
     this.root.add(this.body);
 
-    const finMat = whaleMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.52 });
+    const finMat = whaleMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.52 }, null, pal);
     this.mats.push(finMat);
 
-    const pGeo = flipperGeo(L);
+    const pGeo = flipperGeo(L, pal);
     this.pecs = []; this.pecTips = [];
     const pecBone = this.bones[2];
     for (const side of [1, -1]) {
@@ -1087,7 +1158,9 @@ export class Whale {
       this.pecs.push(pivot);
     }
 
-    const [fa, fb] = flukeGeo(L);
+    times.flippers = performance.now() - tb; tb = performance.now();
+    const [fa, fb] = flukeGeo(L, pal);
+    times.flukes = performance.now() - tb;
     this.fluke = new THREE.Group();
     this.fluke.add(new THREE.Mesh(fa, finMat), new THREE.Mesh(fb, finMat));
     this.fluke.position.set(0.02 * L, 0.001 * L, 0);
@@ -1102,7 +1175,7 @@ export class Whale {
     dShape.lineTo(0.03 * L, 0);
     const dGeo = new THREE.ExtrudeGeometry(dShape, { depth: 0.004 * L, bevelEnabled: true, bevelSize: 0.003 * L, bevelThickness: 0.003 * L, bevelSegments: 3, curveSegments: 16 });
     dGeo.translate(0, 0, -0.002 * L);
-    const dMat = whaleMaterial({ color: FIN_BLUE.clone() });
+    const dMat = whaleMaterial({ color: new THREE.Color(pal.fin) }, null, pal);
     this.mats.push(dMat);
     const dorsal = new THREE.Mesh(dGeo, dMat);
     const du = 0.7, dBone = this.bones[4];
@@ -1113,7 +1186,7 @@ export class Whale {
     this.trails = [];
     this.trailMat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: true,
-      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uGlow: { value: 0 }, uTime: { value: 0 } }]),
+      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uGlow: { value: 0 }, uTime: { value: 0 }, uNightCol: { value: new THREE.Vector3(...pal.trail) } }]),
       vertexShader: `
         #include <common>
         #include <fog_pars_vertex>
@@ -1124,12 +1197,12 @@ export class Whale {
       fragmentShader: `
         #include <common>
         #include <fog_pars_fragment>
-        uniform float uGlow, uTime; varying float vT, vSide;
+        uniform float uGlow, uTime; uniform vec3 uNightCol; varying float vT, vSide;
         void main(){
           float a = (1.0 - vT) * (1.0 - vT) * smoothstep(1.0, 0.0, abs(vSide));
           a *= 0.55 + 0.45 * sin(vT * 30.0 - uTime * 2.0);
           vec3 day = vec3(1.0, 0.92, 0.78) * (0.2 + uGlow * 0.5);
-          vec3 night = vec3(0.25, 0.9, 1.0) * (0.75 + uGlow);
+          vec3 night = uNightCol * (0.75 + uGlow);
           gl_FragColor = vec4(mix(day, night, uNight) * a, 1.0);
           #ifdef USE_FOG
             gl_FragColor.rgb *= 1.0 - fogAmountAt(vFogWorld);
@@ -1144,12 +1217,14 @@ export class Whale {
       this.trails.push(tr);
     }
 
-    this.plankton = new Plankton(this);
+    tb = performance.now();
+    this.plankton = new Plankton(this, opts.plankton || 6500, pal);
+    times.plankton = performance.now() - tb;
     this.group.add(this.plankton.points);
 
     this.time = 0;
     this.glow = 0;
-    this.path = new SwimPath();
+    this.path = S.path;
     this.pathLen = this.path.length;
     this.lap = 311; // one lap takes about as long as the traveller's journey, so the opening sky is similar each time
     this.speed = this.pathLen / this.lap;
@@ -1158,6 +1233,7 @@ export class Whale {
     this._turn = 0;
     this._ph = 0;
     this.visitState = null;
+    this._qLift = new THREE.Quaternion(); this._zAxis = new THREE.Vector3(0, 0, 1);
     this._qRoot = new THREE.Quaternion(); this._qInv = new THREE.Quaternion();
     this._rel = BONE_U.map(() => new THREE.Quaternion());
     this._q = new THREE.Quaternion(); this._q2 = new THREE.Quaternion(); this._und = new THREE.Quaternion();
@@ -1168,9 +1244,49 @@ export class Whale {
   // answer the traveller: plan a visit starting now (returns the plan, or null if already visiting)
   visit(t, predict, groundAt, clearAt) {
     if (this.visitState) return null;
-    this.visitState = new VisitTrack(this.path, this.lap, t, predict, groundAt, clearAt);
+    return this.commitVisit(this.planVisit(t, predict, groundAt, clearAt));
+  }
+  planVisit(t, predict, groundAt, clearAt) {
+    return new VisitTrack(this.path, this.lap, t, predict, groundAt, clearAt, { tShift: this.lapOffset, yOff: this.yOffset });
+  }
+  commitVisit(v) {
+    this.visitState = v;
     this.setShadows(true);
-    return this.visitState;
+    return v;
+  }
+  // extra height (m) at time t: a planned move out of another whale's way, plus any safety nudge
+  liftAt(t, withNudge = true) {
+    let y = withNudge ? this._emLift : 0;
+    const P = this.liftPlan;
+    if (P && t >= P.t0 && t <= P.t1) {
+      const x = (t - P.t0) / P.dt, i = Math.min(P.y.length - 1, Math.floor(x)), j = Math.min(P.y.length - 1, i + 1);
+      y += P.y[i] + (P.y[j] - P.y[i]) * (x - Math.floor(x));
+    }
+    return y;
+  }
+  // where the body will be at time t (no side effects): spheres along the spine, for keeping apart
+  bodyAt(t, out = [], withNudge = true) {
+    const loop = this.path, L = this.L, sLoop = loop.stationAt(t + this.lapOffset, this.lap);
+    let path = loop, sc = sLoop, yAdd = this.yOffset;
+    const v = this.visitState;
+    if (v && t >= v.t0) {
+      const tau = t - v.t0;
+      if (tau <= v.D) { path = v; sc = v.sOf(tau); yAdd = 0; }
+      else {
+        const extra = loop.ahead(v.sEnd, sLoop);
+        if (extra < loop.length / 2 && extra <= 320) { path = v; sc = v.endStation + extra; yAdd = 0; }
+      }
+    }
+    yAdd += this.liftAt(t, withNudge);
+    const c = path.point(sc, this._bc || (this._bc = new THREE.Vector3()));
+    for (let k = 0; k < SPHERE_U.length; k++) {
+      const o = out[k] || (out[k] = new THREE.Vector3());
+      path.point(sc + (0.5 - SPHERE_U[k]) * L * FOLLOW, o).sub(c).divideScalar(FOLLOW).add(c);
+      o.y += yAdd;
+      o.r = SPHERE_R[k] * L;
+    }
+    out.length = SPHERE_U.length;
+    return out;
   }
   setShadows(on) {
     this.root.traverse((o) => { if (o.isMesh) o.castShadow = on; });
@@ -1180,12 +1296,13 @@ export class Whale {
     this.time = t;
     const L = this.L, loop = this.path;
     // where along which route: the loop, or a visit to the traveller
-    const sLoop = loop.stationAt(t, this.lap);
+    const sLoop = loop.stationAt(t + this.lapOffset, this.lap);
     let path = loop, sc = sLoop, speed = this.speed, wVisit = 0;
     const v = this.visitState;
     if (v) {
       const tau = t - v.t0;
-      if (tau < 0 || tau > v.D + 60) { this.visitState = null; this.setShadows(false); }
+      if (tau < 0) { /* the visit starts a little later: keep swimming the loop until then */ }
+      else if (tau > v.D + 60) { this.visitState = null; this.setShadows(false); }
       else if (tau <= v.D) { path = v; sc = v.sOf(tau); speed = v.speedOf(tau); wVisit = smoothstep(0, 8, tau); }
       else {
         // back on the loop copy: follow the loop's own timing until the tail is clear of the flight
@@ -1206,15 +1323,24 @@ export class Whale {
     this._turn = lerp(this._turn, turn, clamp(dt * 1.5, 0, 1));
     const turnAbs = Math.abs(this._turn);
 
+    // moving out of another whale's way: height, and a matching gentle pitch
+    if (this.liftPlan && t > this.liftPlan.t1) this.liftPlan = null;
+    const lift = this.liftAt(t);
+    const climb = (this.liftAt(t + 0.5, false) - this.liftAt(t - 0.5, false));
+    this._qLift.setFromAxisAngle(this._zAxis, Math.atan2(climb, Math.max(speed, 8)) * 0.8);
+
     // body centre on the path
     const bob = Math.sin(ph0 - 0.8) * 0.016 * L;
     path.point(sc, this.root.position);
+    if (path === loop) this.root.position.y += this.yOffset;
     path.frame(sc, this._qRoot);
     if (blendLoop) {
-      this.root.position.lerp(loop.point(sLoop, this._v), 1 - wVisit);
+      this._v.copy(loop.point(sLoop, this._v)); this._v.y += this.yOffset;
+      this.root.position.lerp(this._v, 1 - wVisit);
       this._qRoot.slerp(loop.frame(sLoop, this._q2), 1 - wVisit);
     }
-    this.root.position.y += bob;
+    this._qRoot.multiply(this._qLift);
+    this.root.position.y += bob + lift;
     this._q.setFromEuler(this._e.set(0.03 * Math.sin(t * 0.05), Math.sin(ph0 * 0.5 + 0.7) * 0.01, Math.sin(ph0) * 0.03));
     this.root.quaternion.copy(this._qRoot).multiply(this._q);
     this._qInv.copy(this.root.quaternion).invert();
@@ -1227,6 +1353,7 @@ export class Whale {
       const s = sc + (0.5 - BONE_U[i]) * L * FOLLOW;
       path.frame(s, this._rel[i]);
       if (blendLoop) this._rel[i].slerp(loop.frame(sLoop + (0.5 - BONE_U[i]) * L * FOLLOW, this._q2), 1 - wVisit);
+      this._rel[i].multiply(this._qLift);
       this._rel[i].premultiply(this._qInv); // relative to the root
     }
     for (let i = 0; i < BONE_U.length; i++) {
@@ -1280,4 +1407,119 @@ export class Whale {
   }
 
   get position() { return this.root.position; }
+}
+
+// ----------------------------------------------------------------------------- the pod
+// Several whales sharing the sky: decides who answers a call, and keeps their bodies apart —
+// visits are simulated in advance and the other whale is given a smooth, planned climb (or dip)
+// out of the way; a per-frame check nudges them apart if they ever come close anyway.
+const SAFE = 45; // metres between the conservative body spheres
+export class WhalePod {
+  constructor(whales) { this.whales = whales; this._a = []; this._b = []; this.closest = Infinity; }
+  clearance(a, b, t, withNudge = true) {
+    const A = a.bodyAt(t, this._a, withNudge), B = b.bodyAt(t, this._b, withNudge);
+    // far apart? the middles tell us without checking every pair
+    const far = A[5].distanceTo(B[5]) - 0.8 * a.L - 0.8 * b.L; // (every sphere lies within 0.78 L of the middle)
+    if (far > SAFE * 2) return far;
+    let m = Infinity;
+    for (const p of A) for (const q of B) m = Math.min(m, p.distanceTo(q) - p.r - q.r);
+    return m;
+  }
+  get visitor() { return this.whales.find((w) => w.visitState) || null; }
+  // a call: the nearest whale answers unless another can come with less disturbance; if their
+  // paths would cross, the one that comes may wait a few seconds before it turns (the song is
+  // immediate), and whoever stays gets a small, smooth move out of the way
+  summon(t, traveller, predict, groundAt, clearAt) {
+    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+  }
+  // the same, spread over several frames so the call never stutters; resolves with the result
+  summonAsync(t, traveller, predict, groundAt, clearAt) {
+    const it = this.summonSteps(t, traveller, predict, groundAt, clearAt);
+    return new Promise((resolve) => {
+      const step = () => { const r = it.next(); if (r.done) resolve(r.value); else setTimeout(step, 0); };
+      step();
+    });
+  }
+  *summonSteps(t, traveller, predict, groundAt, clearAt) {
+    if (this.visitor) return null;
+    const cands = this.whales.map((w) => ({ w, d: w.position.distanceTo(traveller) })).sort((x, y) => x.d - y.d);
+    let best = null;
+    search: for (const delay of [0, 4, 8, 12, 16, 20]) {
+      for (const c of cands) {
+        const t0 = t + delay;
+        const v = c.w.planVisit(t0, (tau) => predict(tau + delay), groundAt, clearAt);
+        c.w.visitState = v; // (just for the simulation)
+        const others = this.whales.filter((o) => o !== c.w);
+        const plans = others.map((o) => this.planAvoid(c.w, o, t, t0 + v.D + 50));
+        c.w.visitState = null;
+        yield; // (let a frame through between candidate plans)
+        const lift = plans.reduce((m, p) => Math.max(m, p.maxLift), 0);
+        const cost = c.d / 400 + lift / 40 + delay / 6 + (plans.some((p) => !p.ok) ? 100 : 0);
+        if (!best || cost < best.cost) best = { cost, lift, whale: c.w, visit: v, plans, others, delay };
+        if (lift === 0 && delay === 0) break search; // the nearest one can come right away, nobody moves
+      }
+      if (best && best.lift <= 60) break; // good enough: a small, gentle move
+    }
+    if (this.visitor) return null; // (someone else answered while we were planning)
+    best.whale.commitVisit(best.visit);
+    best.others.forEach((o, i) => { o.liftPlan = best.plans[i].plan; });
+    return best;
+  }
+  // a smooth height schedule for `other` that keeps it SAFE metres from `visitor` over [t0, t1]
+  planAvoid(visitor, other, t0, t1) {
+    const dt = 0.5, n = Math.ceil((t1 - t0) / dt) + 1;
+    const saved = other.liftPlan;
+    other.liftPlan = null;
+    const clear = (i) => this.clearance(visitor, other, t0 + i * dt, false);
+    const need = new Float32Array(n), c0 = new Float32Array(n);
+    let any = false;
+    for (let i = 0; i < n; i++) { c0[i] = clear(i); need[i] = Math.max(0, SAFE - c0[i]); if (need[i] > 0) any = true; }
+    let result = { plan: null, maxLift: 0, ok: true };
+    if (any) {
+      result = null;
+      for (const dir of [1, -1]) {
+        let gain = 1.4;
+        for (let iter = 0; iter < 5; iter++) {
+          // widen the need into long ramps (±14 s), then round it off
+          const y = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            let mx = 0;
+            for (let k = -28; k <= 28; k++) { const j = i + k; if (j >= 0 && j < n && need[j] > 0) mx = Math.max(mx, (need[j] * gain + 40) * Math.cos((Math.PI / 2) * (k / 29)) ** 2); }
+            y[i] = mx;
+          }
+          for (let pass = 0; pass < 3; pass++) {
+            const y2 = y.slice();
+            for (let i = 0; i < n; i++) { let sum = 0, cnt = 0; for (let k = -12; k <= 12; k++) { const j = i + k; if (j >= 0 && j < n) { sum += y[j]; cnt++; } } y2[i] = Math.max(y[i] * 0.9, sum / cnt); }
+            y.set(y2);
+          }
+          for (let i = 0; i < n; i++) y[i] *= dir * smoothstep(0, 8, i) * smoothstep(0, 8, n - 1 - i);
+          other.liftPlan = { t0, t1, dt, y };
+          const maxLift = y.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+          // a lift of h can only close a gap that was under SAFE + h; skip the rest
+          let worst = Infinity;
+          for (let i = 0; i < n; i++) if (c0[i] < SAFE + maxLift) worst = Math.min(worst, clear(i));
+          if (worst >= SAFE * 0.8) { if (!result || maxLift < result.maxLift) result = { plan: other.liftPlan, maxLift, ok: true }; break; }
+          gain *= 1.6;
+        }
+      }
+      if (!result) result = { plan: other.liftPlan, maxLift: 999, ok: false };
+    }
+    other.liftPlan = saved;
+    return result;
+  }
+  // per frame: the safety net (a quick nudge upward for whoever is not visiting)
+  update(t, dt) {
+    const [a, b] = this.whales;
+    if (!a || !b) return;
+    const c = this.clearance(a, b, t);
+    this.closest = Math.min(this.closest, c);
+    const yielder = a.visitState ? b : b.visitState ? a : b;
+    for (const w of this.whales) {
+      if (w === yielder && c < SAFE * 0.5) w._emLift += (SAFE - c) * 1.5 * dt;
+      else w._emLift = Math.max(0, w._emLift - 6 * dt);
+    }
+  }
 }

@@ -125,11 +125,12 @@ export function buildExtras(hf, castle, mats, path) {
       }`,
   });
   // a ribbon that leaves the rim, arcs outward and falls
+  const clamp01 = (x) => Math.min(1, Math.max(0, x));
   const fallRibbon = (w, L) => {
     const g = new THREE.PlaneGeometry(w, L, 1, 24);
     const p = g.attributes.position;
     for (let i = 0; i < p.count; i++) {
-      const f = 0.5 - p.getY(i) / L; // 0 at the top, 1 at the bottom
+      const f = clamp01(0.5 - p.getY(i) / L); // 0 at the top, 1 at the bottom (clamped: rounding can dip below 0)
       p.setXYZ(i, p.getX(i) * (1 + f * 1.8), -f * L, Math.sqrt(f) * L * 0.12);
     }
     g.computeVertexNormals();
