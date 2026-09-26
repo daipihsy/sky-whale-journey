@@ -500,16 +500,15 @@ function whaleVisit(onDone) {
   if (summoning) return;
   const lead = 1.0, t0 = whaleT + lead;
   const predict = (tau) => predictTraveller(tau + lead);
-  // mum (pink) or dad (blue) — chosen at random
-  const pick = W.whales[Math.random() < 0.5 ? 0 : 1];
+  // mum and dad both come, sweeping over on either side of Orange
   const done = (r) => {
     summoning = false;
-    if (r) visitInfo = { tPass: r.visit.tPass, sung: false, whale: r.whale };
+    if (r) visitInfo = { tPass: r.tPass, sung: false, whale: r.lead, whales: r.whales };
     onDone && onDone(r);
   };
   summoning = true;
-  if (fastForward) done(W.pod.summon(t0, W.ctrl.pos, predict, groundAt, clearAt, pick));
-  else W.pod.summonAsync(t0, W.ctrl.pos, predict, groundAt, clearAt, pick).then(done);
+  if (fastForward) done(W.pod.summonAll(t0, W.ctrl.pos, predict, groundAt, clearAt));
+  else W.pod.summonAllAsync(t0, W.ctrl.pos, predict, groundAt, clearAt).then(done);
 }
 let fastForward = false;
 let visitInfo = null;
@@ -617,7 +616,7 @@ function directorCamera(s, dt, t) {
   const vw = visitWeight();
   let fov = shot.fov, sy = shot.sy, dist = shot.dist;
   if (vw > 0) {
-    const wp = visitInfo.whale.position;
+    const wp = visitFocus();
     const before = whaleT < visitInfo.tPass;
     if (before) visitInfo.yaw = Math.atan2(wp.x - p.x, -(wp.z - p.z)); // stop chasing once it is overhead
     const dYaw = clamp(Math.atan2(Math.sin(visitInfo.yaw - yaw), Math.cos(visitInfo.yaw - yaw)), -1.2, 1.2);
@@ -663,6 +662,14 @@ function directorCamera(s, dt, t) {
   return { pos, q, fov: cam.fov };
 }
 
+// where to look during the pass: between the visiting whales (so both are in the shot)
+const _vf = new THREE.Vector3();
+function visitFocus() {
+  const ws = visitInfo.whales.filter((w) => w.visitState);
+  _vf.set(0, 0, 0);
+  for (const w of ws.length ? ws : [visitInfo.whale]) _vf.add(w.position);
+  return _vf.divideScalar(Math.max(1, ws.length));
+}
 // 0..1: how much the camera should attend to the whale's overhead pass
 function visitWeight() {
   if (!visitInfo) return 0;
@@ -675,7 +682,7 @@ function orbitCamera(dt, look) {
   // during the whale's pass, drift the view up toward it unless the player is steering the camera
   const vw = visitWeight();
   if (vw > 0 && performance.now() - input.lastLook > 2500) {
-    const wp = visitInfo.whale.position;
+    const wp = visitFocus();
     const wYaw = Math.atan2(wp.x - c.pos.x, -(wp.z - c.pos.z));
     orbit.yaw = angLerp(orbit.yaw, wYaw, 1 - Math.exp(-dt * 0.8 * vw));
     orbit.pitch = lerp(orbit.pitch, -0.28, 1 - Math.exp(-dt * 0.8 * vw));
@@ -836,38 +843,31 @@ function update(dt) {
     audio.whaleSong(0.9, whalePan());
     for (const w of W.whales) w.glow = Math.max(w.glow, 0.6);
     // one of them turns and comes to the traveller (unless one is already on its way)
-    whaleVisit((r) => { if (r) { r.whale.glow = 1; caption(r.whale.palette === 'pink' ? '橙子，妈妈来了' : '橙子，爸爸来了'); } });
+    whaleVisit((r) => { if (r) { for (const w of r.whales) w.glow = 1; caption('橙子，爸爸妈妈来了'); } });
   }
   // the overhead pass: a deep song, a swell of music, a slow glow
   if (visitInfo) {
     if (!visitInfo.sung && whaleT > visitInfo.tPass - 5) {
       visitInfo.sung = true;
-      audio.whaleSong(1.0, whalePan()); audio.gateSwell(); visitInfo.whale.glow = 1;
+      audio.whaleSong(1.0, whalePan()); audio.gateSwell(); for (const w of visitInfo.whales) w.glow = 1;
       audio.whoosh(9, whalePan(), -whalePan() || 0.6);
     }
-    if (!visitInfo.whale.visitState) visitInfo = null;
+    if (!visitInfo.whales.some((w) => w.visitState)) visitInfo = null;
   }
 
   // --- story lines: each bridge crossed brings Orange closer to home; home at the castle gate
   if (j.phase === 'run' && !j.relocate) {
     const near = nearestS(c.pos, j.s);
-    W.path.bridges.forEach((br, i) => {
-      const st = (j.bridgeState ||= []);
-      if (near.d < 6 && near.s > br.s0 + 2 && near.s < br.s1 - 2) st[i] = st[i] || 'on';
-      if (st[i] === 'on' && near.s > br.s1 + 4 && near.d < 12) {
-        st[i] = 'done';
-        // (dark lettering once the gate's light is rising; never over the homecoming line)
-        if (!j.homeShown) caption('橙子离家又近了一步', { tone: j.veil > 0.25 ? 'dark' : 'light', sec: 3.6 });
-      }
-    });
+    // stepping onto the first bridge
+    const br = W.path.bridges[0];
+    if (!j.bridgeShown && near.d < 6 && near.s > br.s0 + 1 && near.s < br.s1) { j.bridgeShown = true; caption('橙子离家又近了一步'); }
   }
-  // home: at the gate (a few seconds after stepping off the grand bridge), or as soon as the gate's
-  // light takes Orange in, whichever comes first
-  if (!j.homeShown && (j.phase === 'light' || j.phase === 'hold' || (j.mode === 'auto' ? j.s > sGate - 8 : c.pos.distanceTo(gateWorld) < 7))) {
+  // home: once Orange has gone in through the castle gate (the gate's light takes over)
+  if (!j.homeShown && (j.phase === 'light' || j.phase === 'hold')) {
     j.homeShown = true;
     caption('橙子，回家了', { tone: 'dark', sec: 5.5 });
   }
-  if (j.s < 20 && j.phase === 'run') { j.bridgeState = []; j.homeShown = false; }
+  if (j.s < 20 && j.phase === 'run') { j.bridgeShown = false; j.homeShown = false; }
 
   // --- journey: into the light at the castle gate, then back to the meadow
   if (j.phase === 'run') {

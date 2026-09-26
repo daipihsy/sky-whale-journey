@@ -899,6 +899,13 @@ class VisitTrack extends Track {
     super();
     const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
     const tShift = opts.tShift || 0, yOff = opts.yOff || 0;
+    // (a pair visit: pass beside the traveller rather than straight over, and/or a little higher)
+    const lateral = opts.lateral || 0, passLift = opts.passLift || 0;
+    const turnSide = opts.turnSide || 0; // (a pair visit: always turn back on its own side, so the two part ways)
+    // (a pair visit: a fixed pass point in its own lane, flown along a shared axis, parallel to the other)
+    const passPoint = opts.passPoint || null, axis = opts.axis || null;
+    // (a pair visit: rejoin the loop on its own side of Orange, so the two never cross on the way back)
+    const endSide = opts.endSide || null, endCentre = opts.passPoint || null;
     const stAt = (t) => loop.stationAt(t + tShift, lap);
     const sStart = stAt(t0);
     const speedAt = (t) => loop.ahead(stAt(t - 0.5), stAt(t + 0.5));
@@ -906,9 +913,11 @@ class VisitTrack extends Track {
     const PRE = 450, LEAD = 20, AVG_IN = 50, AVG_OUT = 32, V_PASS = 26;
     const pt = (s) => { const p = loop.point(s, V()); p.y += yOff; return p; };
     // waypoints for a given pass point and loop re-entry station
-    const route = (target, sEnd, turnPref = 0) => {
+    const route = (target0, sEnd, turnPref = 0) => {
       const D0 = pt(sStart + 260), T0 = loop.tangent(sStart + 260, V());
-      const passY = groundAt(target.x, target.z) + 215;
+      const in0 = V(target0.x - D0.x, 0, target0.z - D0.z).normalize();
+      const target = passPoint ? V(passPoint.x, 0, passPoint.z) : target0.clone().addScaledVector(V(-in0.z, 0, in0.x), lateral);
+      const passY = groundAt(target.x, target.z) + 215 + passLift;
       // glide down no steeper than ~1:3: if the traveller is close to the loop, first carry on along
       // the loop while sinking, then swing toward them
       const direct = Math.hypot(target.x - D0.x, target.z - D0.z);
@@ -916,7 +925,7 @@ class VisitTrack extends Track {
       const toward = V(target.x - D0.x, 0, target.z - D0.z).normalize();
       const A = D0.clone().addScaledVector(T0.clone().setY(0).normalize(), 380 + extraRun * 0.75).addScaledVector(toward, 220);
       A.y = lerp(D0.y, passY + 100, extraRun > 0 ? 0.5 : 0.3);
-      const dPass = V(target.x - A.x, 0, target.z - A.z).normalize();
+      const dPass = axis ? axis.clone() : V(target.x - A.x, 0, target.z - A.z).normalize();
       const side = V(-dPass.z, 0, dPass.x);
       const approach = clamp(0.5 * Math.hypot(target.x - A.x, target.z - A.z), 220, 520); // never double back
       const J = pt(sEnd - 240), J1 = pt(sEnd - 120), J2 = pt(sEnd);
@@ -940,10 +949,11 @@ class VisitTrack extends Track {
         const ang = Math.acos(clamp(a.dot(b) / (la * lb), -1, 1));
         sharp += (ang * ang) * 400 / Math.min(la, lb);
       }
-      return { ctrl, W2, sharp, align: Math.acos(clamp(inDir.dot(tJ), -1, 1)) };
+      return { ctrl, W2, sharp, pass: target, align: Math.acos(clamp(inDir.dot(tJ), -1, 1)) };
     };
     // the gentler of the two ways round after the pass
     const bestRoute = (target, sEnd) => {
+      if (turnSide) return route(target, sEnd, turnSide);
       const a = route(target, sEnd, 1), b = route(target, sEnd, -1);
       return a.sharp + a.align <= b.sharp + b.align ? a : b;
     };
@@ -962,10 +972,11 @@ class VisitTrack extends Track {
       let D = 90;
       best = null;
       for (let k = 0; k < 3; k++) D = timing(bestRoute(target, stAt(t0 + D))).D;
-      for (let dD = -30; dD <= 30; dD += 5) {
+      for (let dD = endSide ? -40 : -30; dD <= (endSide ? 70 : 30); dD += 5) {
         const Dc = D + dD, sEnd = stAt(t0 + Dc), r = bestRoute(target, sEnd);
-        const cost = Math.abs(timing(r).D - Dc) * 0.1 + r.align * 1.2 + r.sharp * 1.5 + Dc * 0.004;
-        if (!best || cost < best.cost) best = { cost, D: Dc, sEnd, r, target };
+        let cost = Math.abs(timing(r).D - Dc) * 0.1 + r.align * 1.2 + r.sharp * 1.5 + Dc * 0.004;
+        if (endSide) { const e = pt(sEnd); cost += Math.max(0, 150 - (e.x - endCentre.x) * endSide.x - (e.z - endCentre.z) * endSide.z) * 0.05; }
+        if (!best || cost < best.cost) best = { cost, D: Dc, sEnd, r, target: r.pass };
       }
       tPass = timing(best.r).tIn; // refine the traveller's predicted position once
     }
@@ -977,7 +988,7 @@ class VisitTrack extends Track {
     const curve = new THREE.CatmullRomCurve3(ctrl, false, 'centripetal');
     // sample between the phantoms densely, then resample at even spacing
     const dense = [];
-    const t0c = 1 / (nc - 1), t1c = (nc - 2) / (nc - 1), steps = 20000;
+    const t0c = 1 / (nc - 1), t1c = (nc - 2) / (nc - 1), steps = 7000;
     for (let i = 0; i <= steps; i++) dense.push(curve.getPoint(t0c + (t1c - t0c) * (i / steps)));
     const flightStart = pts.length;
     pts.push(dense[0].clone());
@@ -1032,7 +1043,7 @@ class VisitTrack extends Track {
       const u1 = V().subVectors(b, a).normalize(), u2 = V().subVectors(c, b).normalize();
       return Math.acos(clamp(u1.dot(u2), -1, 1)) / (10 * ds) > 1 / 420;
     };
-    for (let pass = 0; pass < 40; pass++) {
+    for (let pass = 0; pass < 16; pass++) {
       const mark = new Float32Array(pts.length);
       let any = false;
       for (let i = flightStart + 80; i < flightEnd - 80; i++) if (tightAt(i)) { any = true; for (let k = -60; k <= 60; k++) mark[clamp(i + k, 0, pts.length - 1)] = Math.max(mark[clamp(i + k, 0, pts.length - 1)], 1 - Math.abs(k) / 61); }
@@ -1091,10 +1102,17 @@ function shared() {
   }
   return SHARED;
 }
-// conservative spheres along the body for keeping whales apart (u along the length, radius / length;
-// wide around the flippers' reach and the flukes)
+// spheres for keeping whales apart, measured from the real rig over a lap and a visit (the largest
+// reach of the skin, flippers and flukes through the bob, strokes and turns) plus a 0.02 margin;
+// sizes and offsets are fractions of the whale's length, in the frame of the station they ride on
 const SPHERE_U = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
-const SPHERE_R = [0.07, 0.11, 0.14, 0.32, 0.36, 0.34, 0.24, 0.12, 0.1, 0.2, 0.28];
+const SPHERE_R = [0.19, 0.2, 0.21, 0.2, 0.19, 0.16, 0.16, 0.16, 0.17, 0.18, 0.17];
+const FIN_SPHERES = [
+  // flippers, from their root to the tip (riding on the station at u = 0.31)
+  [0.31, [-1, 1].flatMap((sd) => [[-0.043, -0.044, 0.127, 0.16], [-0.119, -0.084, 0.163, 0.16], [-0.203, -0.116, 0.202, 0.16], [-0.294, -0.14, 0.243, 0.16]].map(([x, y, z, r]) => [x, y, z * sd, r]))],
+  // flukes, from the notch to the tips (riding on the tail station)
+  [1.0, [-1, 1].flatMap((sd) => [[-0.022, 0.038, 0.049, 0.205], [-0.049, 0.05, 0.132, 0.205], [-0.105, 0.072, 0.215, 0.205]].map(([x, y, z, r]) => [x, y, z * sd, r]))],
+];
 
 export class Whale {
   // opts.palette: 'blue' | 'pink'; opts.lapOffset: seconds behind on the loop; opts.yOffset: metres higher
@@ -1246,8 +1264,8 @@ export class Whale {
     if (this.visitState) return null;
     return this.commitVisit(this.planVisit(t, predict, groundAt, clearAt));
   }
-  planVisit(t, predict, groundAt, clearAt) {
-    return new VisitTrack(this.path, this.lap, t, predict, groundAt, clearAt, { tShift: this.lapOffset, yOff: this.yOffset });
+  planVisit(t, predict, groundAt, clearAt, extra = {}) {
+    return new VisitTrack(this.path, this.lap, t, predict, groundAt, clearAt, { ...extra, tShift: this.lapOffset, yOff: this.yOffset });
   }
   commitVisit(v) {
     this.visitState = v;
@@ -1264,9 +1282,9 @@ export class Whale {
     }
     return y;
   }
-  // where the body will be at time t (no side effects): spheres along the spine, for keeping apart
-  bodyAt(t, out = [], withNudge = true) {
-    const loop = this.path, L = this.L, sLoop = loop.stationAt(t + this.lapOffset, this.lap);
+  // which route and station the whale is on at time t (no side effects)
+  routeAt(t) {
+    const loop = this.path, sLoop = loop.stationAt(t + this.lapOffset, this.lap);
     let path = loop, sc = sLoop, yAdd = this.yOffset;
     const v = this.visitState;
     if (v && t >= v.t0) {
@@ -1277,15 +1295,31 @@ export class Whale {
         if (extra < loop.length / 2 && extra <= 320) { path = v; sc = v.endStation + extra; yAdd = 0; }
       }
     }
-    yAdd += this.liftAt(t, withNudge);
-    const c = path.point(sc, this._bc || (this._bc = new THREE.Vector3()));
-    for (let k = 0; k < SPHERE_U.length; k++) {
-      const o = out[k] || (out[k] = new THREE.Vector3());
-      path.point(sc + (0.5 - SPHERE_U[k]) * L * FOLLOW, o).sub(c).divideScalar(FOLLOW).add(c);
-      o.y += yAdd;
-      o.r = SPHERE_R[k] * L;
+    return { path, sc, yAdd };
+  }
+  // the spine point and frame at body fraction u (as the rig places it), for time t
+  stationFrame(route, u, outP, outQ) {
+    const { path, sc } = route, L = this.L;
+    const c = route.c || (route.c = path.point(sc, new THREE.Vector3()));
+    path.point(sc + (0.5 - u) * L * FOLLOW, outP).sub(c).divideScalar(FOLLOW).add(c);
+    outP.y += route.yAdd;
+    if (outQ) path.frame(sc + (0.5 - u) * L * FOLLOW, outQ);
+    return outP;
+  }
+  // where the body will be at time t (no side effects): spheres along the spine, the flippers and
+  // the flukes (their offsets measured from the real rig, see FIN_SPHERES), for keeping apart
+  bodyAt(t, out = [], withNudge = true) {
+    const L = this.L, route = this.routeAt(t); // (route caches its centre point)
+    route.yAdd += this.liftAt(t, withNudge);
+    let n = 0;
+    const put = (r) => { const o = out[n] || (out[n] = new THREE.Vector3()); o.r = r; n++; return o; };
+    for (let k = 0; k < SPHERE_U.length; k++) this.stationFrame(route, SPHERE_U[k], put(SPHERE_R[k] * L));
+    const q = this._bq || (this._bq = new THREE.Quaternion()), o = this._bo || (this._bo = new THREE.Vector3());
+    for (const [u, pts] of FIN_SPHERES) {
+      const base = this.stationFrame(route, u, this._bb || (this._bb = new THREE.Vector3()), q);
+      for (const [x, y, z, r] of pts) put(r * L).copy(o.set(x * L, y * L, z * L).applyQuaternion(q).add(base));
     }
-    out.length = SPHERE_U.length;
+    out.length = n;
     return out;
   }
   setShadows(on) {
@@ -1413,16 +1447,25 @@ export class Whale {
 // Several whales sharing the sky: decides who answers a call, and keeps their bodies apart —
 // visits are simulated in advance and the other whale is given a smooth, planned climb (or dip)
 // out of the way; a per-frame check nudges them apart if they ever come close anyway.
-const SAFE = 45; // metres between the conservative body spheres
+const SAFE = 70; // metres between the body spheres (the real skin can exceed them by ≤ 26 m in a fast dive)
+let FAR_BOUND = 0.9;
 export class WhalePod {
   constructor(whales) { this.whales = whales; this._a = []; this._b = []; this.closest = Infinity; }
-  clearance(a, b, t, withNudge = true) {
-    const A = a.bodyAt(t, this._a, withNudge), B = b.bodyAt(t, this._b, withNudge);
-    // far apart? the middles tell us without checking every pair
-    const far = A[5].distanceTo(B[5]) - 0.8 * a.L - 0.8 * b.L; // (every sphere lies within 0.78 L of the middle)
+  clearance(a, b, t, withNudge = true, stopBelow = -Infinity) {
+    // far apart? the middles tell us without building every sphere
+    const ra = a.routeAt(t), rb = b.routeAt(t);
+    const ma = a.stationFrame(ra, 0.5, this._ma || (this._ma = new THREE.Vector3())), mb = b.stationFrame(rb, 0.5, this._mb || (this._mb = new THREE.Vector3()));
+    ma.y += a.liftAt(t, withNudge); mb.y += b.liftAt(t, withNudge);
+    const far = ma.distanceTo(mb) - FAR_BOUND * a.L - FAR_BOUND * b.L; // (every sphere lies within FAR_BOUND·L of the middle)
     if (far > SAFE * 2) return far;
+    const A = a.bodyAt(t, this._a, withNudge), B = b.bodyAt(t, this._b, withNudge);
     let m = Infinity;
-    for (const p of A) for (const q of B) m = Math.min(m, p.distanceTo(q) - p.r - q.r);
+    for (const p of A) {
+      for (const q of B) {
+        const d = p.distanceTo(q) - p.r - q.r;
+        if (d < m) { m = d; if (m < stopBelow) return m; }
+      }
+    }
     return m;
   }
   get visitor() { return this.whales.find((w) => w.visitState) || null; }
@@ -1469,6 +1512,90 @@ export class WhalePod {
     best.others.forEach((o, i) => { o.liftPlan = best.plans[i].plan; });
     return best;
   }
+  // both whales answer: they sweep over together, flanking the traveller on either side. The pair
+  // flight is simulated in advance; if any arrangement brings them too close we try another
+  // (swap sides, one sets off a few seconds later, one flies higher), and as a last resort the second
+  // one gets a smooth, planned lift.
+  summonAll(t, traveller, predict, groundAt, clearAt) {
+    const it = this.summonAllSteps(t, traveller, predict, groundAt, clearAt);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+  }
+  summonAllAsync(t, traveller, predict, groundAt, clearAt) {
+    const it = this.summonAllSteps(t, traveller, predict, groundAt, clearAt);
+    return new Promise((resolve) => {
+      const step = () => { const r = it.next(); if (r.done) resolve(r.value); else setTimeout(step, 0); };
+      step();
+    });
+  }
+  *summonAllSteps(t, traveller, predict, groundAt, clearAt) {
+    if (this.visitor || this.whales.length < 2) return null;
+    const [a, b] = this.whales;
+    // plan one whale's visit, setting off `delay` seconds from now
+    const plan = (w, delay, o) => w.planVisit(t + delay, (tau) => predict(tau + delay), groundAt, clearAt, o);
+    // simulate a pair of plans; stops at the first moment they come too close
+    const simulate = function* (va, vb) {
+      a.visitState = va; b.visitState = vb;
+      const tEnd = Math.max(va.t0 + va.D, vb.t0 + vb.D) + 50;
+      let m = Infinity, k = 0;
+      for (let tt = t; tt < tEnd; tt += 0.5) {
+        m = Math.min(m, this.clearance(a, b, tt, false, SAFE));
+        if (m < SAFE) break;
+        if (++k % 120 === 0) { a.visitState = null; b.visitState = null; yield; a.visitState = va; b.visitState = vb; }
+      }
+      a.visitState = null; b.visitState = null;
+      return { m, tEnd };
+    }.bind(this);
+    let best = null;
+    const consider = (va, vb, m, tEnd, cb) => {
+      const late = Math.max(va.t0, vb.t0) - t, apart = Math.abs(va.tPass - vb.tPass);
+      const score = m - late * 1.5 - apart * 2 - cb.lift * 0.05;
+      if (!best || (m >= SAFE && (best.m < SAFE || score > best.score)) || (best.m < SAFE && m > best.m)) best = { va, vb, m, score, cb, tEnd };
+    };
+    // side by side: a shared pass axis (the average of their approach directions) and two parallel
+    // lanes either side of Orange, each whale taking the lane on its own side so their paths never
+    // cross; whoever would arrive first sets off later, so they pass together, then each turns outward
+    const T = predict(45); T.y = 0;
+    const flat = (v) => new THREE.Vector3(v.x, 0, v.z);
+    const da = flat(T).sub(flat(a.position)).normalize(), db = flat(T).sub(flat(b.position)).normalize();
+    const axisV = da.clone().add(db).normalize();
+    const n = new THREE.Vector3(-axisV.z, 0, axisV.x);
+    const aSide = Math.sign(flat(a.position).sub(T).dot(n) - flat(b.position).sub(T).dot(n)) || 1;
+    // (first the usual formation; only if that cannot work, wider lanes, more height and bigger staggers)
+    const rounds = [{ lats: [330], lifts: [100], staggers: [0, 5, -5] }, { lats: [420], lifts: [200], staggers: [0, 10, -10, 16, -16] }];
+    for (const R of rounds) {
+    if (best && best.m >= SAFE) break;
+    for (const lanes of [aSide, -aSide]) for (const lat of R.lats) for (const lift of R.lifts) {
+      const oa = { passPoint: T.clone().addScaledVector(n, lat * lanes), axis: axisV, turnSide: lanes, endSide: n.clone().multiplyScalar(lanes) };
+      const ob = { passPoint: T.clone().addScaledVector(n, -lat * lanes), axis: axisV, turnSide: -lanes, passLift: lift, endSide: n.clone().multiplyScalar(-lanes) };
+      const va0 = plan(a, 0, oa);
+      yield;
+      const vb0 = plan(b, 0, ob);
+      yield;
+      for (const stagger of R.staggers) { // (b passes this many seconds after a)
+        const diff = va0.tPass + stagger - vb0.tPass;
+        const va = diff < 0 ? plan(a, -diff, oa) : va0;
+        yield;
+        const vb = diff > 0 ? plan(b, diff, ob) : vb0;
+        yield;
+        const r = yield* simulate(va, vb);
+        consider(va, vb, r.m, r.tEnd, { lanes, lat, lift, stagger, delay: Math.round(Math.abs(diff)) });
+        if (r.m >= SAFE) break;
+      }
+      if (best && best.m >= SAFE) break;
+    }
+    }
+    if (this.visitor) return null; // (someone answered while we were planning)
+    a.commitVisit(best.va); b.commitVisit(best.vb);
+    if (best.m < SAFE) { // last resort: move the second one smoothly out of the way
+      const p = this.planAvoid(a, b, t, best.tEnd);
+      b.liftPlan = p.plan;
+    }
+    const lead = best.va.tPass <= best.vb.tPass ? a : b;
+    return { whales: [a, b], visits: [best.va, best.vb], lead, tPass: Math.min(best.va.tPass, best.vb.tPass), gap: best.m, arrangement: best.cb };
+  }
+
   // a smooth height schedule for `other` that keeps it SAFE metres from `visitor` over [t0, t1]
   planAvoid(visitor, other, t0, t1) {
     const dt = 0.5, n = Math.ceil((t1 - t0) / dt) + 1;
