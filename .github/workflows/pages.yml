@@ -1,0 +1,47 @@
+# Publish the scene to GitHub Pages on every push to main.
+# The page loads three.js and friends from ./node_modules (see the import map in index.html),
+# so install them and ship just the files it uses alongside index.html and src/.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/node_modules/three/build _site/node_modules/three/examples _site/node_modules/three-mesh-bvh _site/node_modules/n8ao
+          cp index.html _site/
+          cp -r src _site/
+          cp node_modules/three/build/three.module.js _site/node_modules/three/build/
+          cp -r node_modules/three/examples/jsm _site/node_modules/three/examples/
+          cp -r node_modules/three-mesh-bvh/build _site/node_modules/three-mesh-bvh/
+          cp -r node_modules/n8ao/dist _site/node_modules/n8ao/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
